@@ -349,7 +349,19 @@ Las contribuciones son bienvenidas! Por favor:
 
 ## Licencia
 
-MIT License - Ver [LICENSE](LICENSE) para mas detalles.
+Este proyecto esta licenciado bajo [Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)](https://creativecommons.org/licenses/by-sa/4.0/).
+
+### Atribucion
+
+Este laboratorio esta basado en el [OWASP Top 10](https://owasp.org/Top10/), un proyecto de la [OWASP Foundation](https://owasp.org/) tambien licenciado bajo CC BY-SA 4.0.
+
+Sos libre de:
+- **Compartir** — copiar y redistribuir el material en cualquier medio o formato
+- **Adaptar** — remezclar, transformar y construir sobre el material para cualquier proposito, incluso comercial
+
+Bajo las siguientes condiciones:
+- **Atribucion** — Debes dar credito apropiado y linkear a la licencia
+- **ShareAlike** — Si modificas el material, debes distribuirlo bajo la misma licencia
 
 ## Disclaimer Legal
 
