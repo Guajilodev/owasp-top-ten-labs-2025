@@ -1,0 +1,24 @@
+# Credenciales — nunca versionar
+.env
+
+# Obsidian
+.obsidian/
+
+# Certificados TLS
+certbot/conf/
+certbot/www/
+
+# Uploads del lab A02 (volatile)
+src/a02_admin/uploads/*
+!src/a02_admin/uploads/.gitkeep
+
+# Logs del lab A09 (volatile)
+src/a09_actividad/logs/*
+!src/a09_actividad/logs/.gitkeep
+
+# Docker volumes locales
+mysql/data/
+
+# OS
+.DS_Store
+Thumbs.db
