@@ -16,7 +16,7 @@ $modules = [
         'description' => 'Consulta y gestiona las facturas de tus clientes',
         'href' => '/a01_facturas/',
         'owasp' => 'A01: Broken Access Control',
-        'status' => 'pending', // pending | ready
+        'status' => 'ready',
     ],
     [
         'id' => 'a02',
@@ -25,7 +25,7 @@ $modules = [
         'description' => 'Configuración del sistema y usuarios',
         'href' => '/a02_admin/',
         'owasp' => 'A02: Security Misconfiguration',
-        'status' => 'pending',
+        'status' => 'ready',
     ],
     [
         'id' => 'a03',
@@ -43,7 +43,7 @@ $modules = [
         'description' => 'Crea tu cuenta en Nexo',
         'href' => '/a04_registro/',
         'owasp' => 'A04: Cryptographic Failures',
-        'status' => 'pending',
+        'status' => 'ready',
     ],
     [
         'id' => 'a05',
@@ -70,7 +70,7 @@ $modules = [
         'description' => 'Inicia sesión en tu cuenta',
         'href' => '/a07_login/',
         'owasp' => 'A07: Authentication Failures',
-        'status' => 'pending',
+        'status' => 'ready',
     ],
     [
         'id' => 'a08',
@@ -79,7 +79,7 @@ $modules = [
         'description' => 'Personaliza tu experiencia en Nexo',
         'href' => '/a08_preferencias/',
         'owasp' => 'A08: Software or Data Integrity Failures',
-        'status' => 'pending',
+        'status' => 'ready',
     ],
     [
         'id' => 'a09',
@@ -88,7 +88,7 @@ $modules = [
         'description' => 'Historial de acciones en tu cuenta',
         'href' => '/a09_actividad/',
         'owasp' => 'A09: Security Logging and Alerting Failures',
-        'status' => 'pending',
+        'status' => 'ready',
     ],
     [
         'id' => 'a10',

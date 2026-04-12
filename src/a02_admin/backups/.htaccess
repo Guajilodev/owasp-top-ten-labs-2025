@@ -1,0 +1,15 @@
+# ============================================
+# VULNERABLE: Este .htaccess NO protege nada
+# ============================================
+# 
+# Debería tener:
+#   Options -Indexes
+#   <Files "*.sql*">
+#       Require all denied
+#   </Files>
+#
+# Pero no lo tiene. Eso es parte del lab A02.
+#
+
+# TODO: Agregar protección antes del deploy
+# (este TODO nunca se completó...)
