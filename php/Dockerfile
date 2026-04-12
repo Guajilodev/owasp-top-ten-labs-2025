@@ -17,30 +17,29 @@ RUN docker-php-ext-install mysqli pdo pdo_mysql
 # Habilitar mod_rewrite para .htaccess
 RUN a2enmod rewrite headers
 
-# Apache config - VULNERABLE INTENCIONALMENTE
-# - ServerTokens Full: expone version de Apache
-# - ServerSignature On: firma en paginas de error
-# - Options +Indexes: directory listing en /backups/
-# Esto es para el lab A02 (Security Misconfiguration)
+# Apache config - SEGURO para produccion
+# - ServerTokens Prod: oculta version de Apache
+# - ServerSignature Off: sin firma en paginas de error
+# Nota: Lab A02 todavia tiene otras vulns (creds default, /backups/, stack traces)
 RUN echo '\n\
-ServerTokens Full\n\
-ServerSignature On\n\
+ServerTokens Prod\n\
+ServerSignature Off\n\
 ' >> /etc/apache2/apache2.conf
 
 # Habilitar .htaccess en DocumentRoot
 RUN sed -i '/<Directory \/var\/www\/>/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf
 
-# PHP config - VULNERABLE INTENCIONALMENTE
-# display_errors = On para lab A02 (stack trace con creds)
-# expose_php = On para exponer version de PHP
+# PHP config - PARCIALMENTE SEGURO
+# display_errors = On para lab A02 (stack trace con creds) - VULNERABLE
+# expose_php = Off para ocultar version de PHP - SEGURO
 RUN echo '\n\
 display_errors = On\n\
 display_startup_errors = On\n\
 error_reporting = E_ALL\n\
-expose_php = On\n\
+expose_php = Off\n\
 log_errors = On\n\
 error_log = /var/log/nexo/php_errors.log\n\
-' > /usr/local/etc/php/conf.d/nexo-vulnerable.ini
+' > /usr/local/etc/php/conf.d/nexo.ini
 
 # Crear directorios necesarios
 RUN mkdir -p /var/log/nexo && \
