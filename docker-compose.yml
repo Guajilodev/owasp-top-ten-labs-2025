@@ -54,8 +54,9 @@ services:
       - NEXO_DB_PASS=${NEXO_DB_PASS}
       - NEXO_ENV=${NEXO_ENV:-production}
     networks:
-      - frontend
-      - backend
+      frontend:
+        ipv4_address: 172.30.0.10    # IP fija para reglas de firewall
+      backend:
     depends_on:
       - db
     restart: unless-stopped
@@ -118,6 +119,9 @@ networks:
   frontend:
     driver: bridge
     internal: true    # nginx <-> web, aislado
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24    # Subnet fijo para reglas de iptables
   backend:
     driver: bridge
     internal: true    # web <-> db, aislado
