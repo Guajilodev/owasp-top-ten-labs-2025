@@ -136,19 +136,22 @@ include __DIR__ . '/shared/header.php';
     <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 row-cols-xl-5 g-4 mb-5">
         <?php foreach ($modules as $module): ?>
         <div class="col">
-            <div class="card h-100 shadow-sm module-card <?= $module['status'] === 'pending' ? 'border-secondary' : 'border-primary' ?>">
+            <?php if ($module['status'] === 'ready'): ?>
+            <a href="<?= $module['href'] ?>" class="text-decoration-none">
+            <?php endif; ?>
+            <div class="card h-100 shadow-sm module-card <?= $module['status'] === 'pending' ? 'border-secondary' : 'border-primary' ?> <?= $module['status'] === 'ready' ? 'card-clickable' : '' ?>">
                 <div class="card-body text-center">
                     <div class="fs-1 mb-2"><?= $module['icon'] ?></div>
-                    <h5 class="card-title"><?= htmlspecialchars($module['name']) ?></h5>
+                    <h5 class="card-title text-dark"><?= htmlspecialchars($module['name']) ?></h5>
                     <p class="card-text small text-muted">
                         <?= htmlspecialchars($module['description']) ?>
                     </p>
                 </div>
                 <div class="card-footer bg-transparent border-top-0 text-center">
                     <?php if ($module['status'] === 'ready'): ?>
-                        <a href="<?= $module['href'] ?>" class="btn btn-primary btn-sm w-100">
+                        <span class="btn btn-primary btn-sm w-100">
                             Abrir módulo
-                        </a>
+                        </span>
                     <?php else: ?>
                         <span class="badge bg-secondary">Próximamente</span>
                     <?php endif; ?>
@@ -158,6 +161,9 @@ include __DIR__ . '/shared/header.php';
                     <small class="text-danger fw-bold"><?= $module['owasp'] ?></small>
                 </div>
             </div>
+            <?php if ($module['status'] === 'ready'): ?>
+            </a>
+            <?php endif; ?>
         </div>
         <?php endforeach; ?>
     </div>
@@ -231,6 +237,14 @@ include __DIR__ . '/shared/header.php';
 
 .module-card:hover .owasp-badge {
     transform: translateY(0);
+}
+
+.card-clickable {
+    cursor: pointer;
+}
+
+.card-clickable:hover {
+    border-color: #0d6efd !important;
 }
 </style>
 
