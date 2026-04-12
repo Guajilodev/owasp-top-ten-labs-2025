@@ -34,7 +34,7 @@ $modules = [
         'description' => 'Extiende Nexo con plugins verificados',
         'href' => '/a03_plugins/',
         'owasp' => 'A03: Software Supply Chain Failures',
-        'status' => 'pending',
+        'status' => 'ready',
     ],
     [
         'id' => 'a04',
@@ -52,7 +52,7 @@ $modules = [
         'description' => 'Busca y filtra tu cartera de clientes',
         'href' => '/a05_clientes/',
         'owasp' => 'A05: Injection',
-        'status' => 'pending',
+        'status' => 'ready',
     ],
     [
         'id' => 'a06',
@@ -61,7 +61,7 @@ $modules = [
         'description' => 'Adquiere planes y módulos adicionales',
         'href' => '/a06_checkout/',
         'owasp' => 'A06: Insecure Design',
-        'status' => 'pending',
+        'status' => 'ready',
     ],
     [
         'id' => 'a07',
@@ -97,7 +97,7 @@ $modules = [
         'description' => 'Transfiere saldo entre cuentas',
         'href' => '/a10_pagos/',
         'owasp' => 'A10: Mishandling of Exceptional Conditions',
-        'status' => 'pending',
+        'status' => 'ready',
     ],
 ];
 
