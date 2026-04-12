@@ -50,8 +50,8 @@ $pageTitle = $pageTitle ?? 'Nexo';
             position: fixed;
             right: 0;
             top: 56px;
-            width: 480px;
-            height: calc(100vh - 56px - 80px); /* Resta navbar (56px) + footer (~80px) */
+            bottom: 100px; /* Espacio para el footer */
+            width: 500px;
             background: white;
             border-left: 3px solid #dc3545;
             overflow-y: auto;
@@ -61,7 +61,7 @@ $pageTitle = $pageTitle ?? 'Nexo';
         
         .lab-panel-toggle {
             position: fixed;
-            right: 480px;
+            right: 500px;
             top: 70px;
             z-index: 1001;
             background: #dc3545;
@@ -82,7 +82,7 @@ $pageTitle = $pageTitle ?? 'Nexo';
         
         /* Ajuste del contenido principal cuando hay panel */
         body.has-lab-panel main {
-            margin-right: 480px;
+            margin-right: 500px;
         }
         
         @media (max-width: 991.98px) {
