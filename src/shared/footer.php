@@ -11,6 +11,9 @@
                     </small>
                 </div>
                 <div class="col-md-6 text-md-end mt-3 mt-md-0">
+                    <span class="text-muted me-3">
+                        Made with ❤️ by <a href="https://x.com/guajilodev" target="_blank" rel="noopener" class="text-light">@guajilodev</a>
+                    </span>
                     <a href="https://owasp.org/Top10/" target="_blank" rel="noopener" class="text-light me-3">
                         OWASP Top 10
                     </a>
