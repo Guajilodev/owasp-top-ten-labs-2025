@@ -2,6 +2,8 @@
 
 > **Un laboratorio deliberadamente vulnerable para aprender seguridad web**
 
+**Demo en vivo:** [https://nexolab.guajilodev.com](https://nexolab.guajilodev.com)
+
 ---
 
 ## !! ADVERTENCIA DE SEGURIDAD !!
