@@ -16,7 +16,8 @@
  */
 
 // CSP: permite scripts inline (XSS funciona) pero bloquea conexiones externas
-header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self';");
+// Permitimos cdn.jsdelivr.net para Bootstrap (CSS y JS)
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self'; frame-ancestors 'self';");
 
 // Cookies HttpOnly + SameSite para reducir impacto del XSS
 ini_set('session.cookie_httponly', 1);
