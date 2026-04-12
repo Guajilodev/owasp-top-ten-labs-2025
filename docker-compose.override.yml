@@ -1,0 +1,29 @@
+# ============================================
+# OWASP Top 10 Labs 2025 - Nexo
+# Override para DESARROLLO LOCAL (sin SSL)
+# ============================================
+#
+# Este archivo se aplica automáticamente cuando ejecutás:
+#   docker compose up -d
+#
+# Para producción con SSL, renombrá o eliminá este archivo:
+#   mv docker-compose.override.yml docker-compose.override.yml.bak
+# ============================================
+
+services:
+  nginx:
+    volumes:
+      # Usa la config de desarrollo (sin SSL)
+      - ./nginx/conf.d/nexo-local.conf:/etc/nginx/conf.d/nexo.conf:ro
+    # En desarrollo, solo necesitamos el puerto 80
+    ports:
+      - "8082:80"
+      # Comentado en dev:
+      # - "443:443"
+
+  web:
+    # En desarrollo, exponemos el puerto para debug directo (opcional)
+    # ports:
+    #   - "8083:80"
+    environment:
+      - NEXO_ENV=development

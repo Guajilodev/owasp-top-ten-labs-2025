@@ -1,0 +1,61 @@
+# ============================================
+# OWASP Top 10 Labs 2025 - Nexo
+# Reset automático cada 4 horas
+# ============================================
+#
+# INSTALACIÓN EN LA VPS:
+# 
+# Opción 1 - Via crontab:
+#   sudo crontab -e
+#   (copiar las líneas de abajo)
+#
+# Opción 2 - Via /etc/cron.d/:
+#   sudo cp reset.cron /etc/cron.d/nexo-reset
+#   sudo chmod 644 /etc/cron.d/nexo-reset
+#
+# VARIABLES DE ENTORNO:
+# Asegurarse de que NEXO_DB_USER y NEXO_DB_PASS estén disponibles.
+# Pueden definirse en /etc/environment o directamente aquí.
+#
+# VERIFICACIÓN:
+#   tail -f /var/log/nexo-reset.log
+#   docker exec owasp-db-2025 mysql -u"$NEXO_DB_USER" -p"$NEXO_DB_PASS" nexo_labs -e "SELECT COUNT(*) FROM users;"
+# ============================================
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Variables de entorno (cambiar en producción)
+NEXO_DB_USER=nexo_user
+NEXO_DB_PASS=nexo_password_2025
+
+# ============================================
+# Reset de base de datos - cada 4 horas
+# ============================================
+# Re-ejecuta init.sql que trunca todas las tablas y re-inserta datos semilla
+# El contenedor sigue corriendo (sin downtime)
+
+0 */4 * * * root docker exec owasp-db-2025 mysql -u"${NEXO_DB_USER}" -p"${NEXO_DB_PASS}" nexo_labs -e "SOURCE /docker-entrypoint-initdb.d/init.sql" >> /var/log/nexo-reset.log 2>&1 && echo "[$(date '+\%Y-\%m-\%d \%H:\%M:\%S')] Database reset complete" >> /var/log/nexo-reset.log
+
+# ============================================
+# Limpieza de archivos subidos (Lab A02)
+# ============================================
+# El directorio uploads está en tmpfs (se limpia al reiniciar),
+# pero este cron garantiza limpieza durante uptime largo
+
+0 */4 * * * root docker exec owasp-web-2025 find /var/www/html/a02_admin/uploads -type f -not -name ".gitkeep" -delete 2>/dev/null && echo "[$(date '+\%Y-\%m-\%d \%H:\%M:\%S')] Uploads cleaned" >> /var/log/nexo-reset.log
+
+# ============================================
+# Limpieza de logs del Lab A09
+# ============================================
+# El lab A09 expone logs públicamente. Los limpiamos para que
+# el siguiente visitante no vea datos de explotaciones anteriores
+
+0 */4 * * * root docker exec owasp-web-2025 sh -c "> /var/log/nexo/app.log" 2>/dev/null && echo "[$(date '+\%Y-\%m-\%d \%H:\%M:\%S')] Logs cleared" >> /var/log/nexo-reset.log
+
+# ============================================
+# Renovación de certificados Let's Encrypt
+# ============================================
+# Semanal (lunes 3am) - Certbot solo renueva si falta <30 días
+
+0 3 * * 1 root cd /ruta/a/owasp2025 && docker compose run --rm certbot renew --quiet && docker compose exec nginx nginx -s reload >> /var/log/nexo-reset.log 2>&1
