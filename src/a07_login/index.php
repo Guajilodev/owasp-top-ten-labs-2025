@@ -47,6 +47,7 @@ session_regenerate_id(true);
     ],
     'cwes' => ['CWE-307', 'CWE-384', 'CWE-521'],
     'tools' => ['Hydra', 'Burp Suite Intruder', 'curl'],
+    'secureVersion' => 'index_secure.php',
 ];
 
 $error = null;

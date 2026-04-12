@@ -45,6 +45,7 @@ if (password_verify($input, $hash)) {
     ],
     'cwes' => ['CWE-916', 'CWE-327'],
     'tools' => ['CrackStation', 'Hashcat', 'John the Ripper'],
+    'secureVersion' => 'index_secure.php',
 ];
 
 $success = null;

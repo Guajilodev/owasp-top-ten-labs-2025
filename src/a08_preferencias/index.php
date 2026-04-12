@@ -46,6 +46,7 @@ $signature = hash_hmac("sha256", $data, SECRET_KEY);
     ],
     'cwes' => ['CWE-502', 'CWE-345'],
     'tools' => ['base64', 'Burp Suite', 'DevTools'],
+    'secureVersion' => 'index_secure.php',
 ];
 
 // Clase de preferencias (deliberadamente simple)
