@@ -1,7 +1,15 @@
 # OWASP Top 10 Labs 2025 - Nexo
 # PHP 8.2 + Apache - deliberadamente vulnerable para fines educativos
+#
+# SEGURIDAD: Usamos image pinning con digest SHA256
+# Esto garantiza que siempre usamos la MISMA imagen exacta.
+# Sin pinning, un atacante podría comprometer el registry y
+# servir una imagen maliciosa con el mismo tag.
+# (Exactamente lo que enseñamos en Lab A03 - Supply Chain)
+#
+# Para actualizar: docker pull php:8.2-apache && docker inspect --format='{{index .RepoDigests 0}}' php:8.2-apache
 
-FROM php:8.2-apache
+FROM php:8.2-apache@sha256:2d3b5ac95865397e61a6129fb2c70f676a79eafd855e5ff74ff0b409a33dcfe5
 
 # Extensiones necesarias para MariaDB
 RUN docker-php-ext-install mysqli pdo pdo_mysql

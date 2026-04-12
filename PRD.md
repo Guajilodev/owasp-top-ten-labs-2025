@@ -411,22 +411,32 @@ try {
 }
 ```
 
-**Dos vulnerabilidades en uno:**
+**Tres vulnerabilidades en uno:**
 
 1. **Failing open:** Si la query falla (por ejemplo enviando `user_id='; DROP TABLE wallets--`), la excepción se captura y el sistema responde con "éxito" aunque no haya procesado nada — o peor, haya procesado a medias.
 
 2. **Stack trace en el response:** Cuando el error es diferente (un tipo de input que llega al handler interno), la app devuelve el stack trace completo de PHP con la ruta del servidor, la versión de PHP, las credenciales de conexión a la BD visibles en el trace de PDO, y los nombres de todas las tablas.
 
-El estudiante puede explotar ambos enviando requests malformados con curl y observar las respuestas.
+3. **CSRF (vulnerabilidad histórica bonus):** El formulario no valida un token anti-falsificación. Un atacante puede crear un sitio malicioso con un formulario oculto que, al ser visitado por la víctima, ejecuta transferencias sin su consentimiento.
 
-**Por qué estos dos juntos:**
-Son dos caras del mismo error: no saber qué hacer cuando algo falla. Uno "falla abierto" (otorga éxito aunque falló). El otro "grita internals" (expone información que solo el developer debería ver). Ambos vienen de no diseñar el manejo de errores con intención.
+El estudiante puede explotar las tres enviando requests malformados con curl y observar las respuestas. Para CSRF, debe crear un HTML con un formulario que apunte al endpoint vulnerable.
+
+**Por qué CSRF aunque no esté en el Top 10:**
+CSRF fue removido del OWASP Top 10 en 2017 porque los frameworks modernos (Laravel, Django, Rails) lo mitigan por defecto. Este proyecto usa PHP puro SIN framework, exactamente el caso donde CSRF sigue siendo un problema real. Se incluye por completitud pedagógica.
 
 **Caso real:**
 Knight Capital Group (2012). Una excepción no manejada en su sistema de trading algorítmico causó que la firma comprara y vendiera acciones de forma errática durante 45 minutos. Pérdida: $440 millones de dólares. La empresa quebró días después.
 
 **Versión segura:**
 ```php
+// Validar CSRF token
+if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+    http_response_code(403);
+    exit(json_encode(['error' => 'CSRF token invalid']));
+}
+
+// ... lógica de transferencia ...
+
 catch (Exception $e) {
     // Log interno con detalles
     error_log("Transfer error: " . $e->getMessage());
@@ -438,7 +448,7 @@ catch (Exception $e) {
 ```
 
 **Herramientas:** curl, Burp Suite  
-**CWEs:** CWE-636 (Failing Open), CWE-209 (Error con info sensible), CWE-703  
+**CWEs:** CWE-636 (Failing Open), CWE-209 (Error con info sensible), CWE-703, CWE-352 (CSRF)  
 **Dificultad:** Avanzada
 
 ---
@@ -765,6 +775,54 @@ A03 (plugin con backdoor en vendor/), A10 (pagos con failing open).
 | Alguien usa el lab A07 (brute force) contra targets externos | El contenedor `web` no tiene salida a internet. El brute force solo funciona contra la BD local del lab |
 | El cron job falla silenciosamente en la VPS | El cron loguea en `/var/log/nexo-reset.log`. El README incluye cómo verificar que está corriendo |
 | Certbot no renueva y el sitio queda con cert vencido | Cron de renovación semanal + alerta por email en certbot |
+
+---
+
+## 14. Protecciones de Infraestructura del Lab
+
+Aunque el proyecto es deliberadamente vulnerable para fines educativos, implementamos protecciones a nivel de infraestructura para evitar que el lab sea usado como vector de ataque real.
+
+### 14.1 Supply Chain — Práctica lo que predicamos
+
+| Protección | Implementación |
+|------------|----------------|
+| **SRI (Subresource Integrity)** | Bootstrap CSS y JS cargan con atributo `integrity` que verifica hash SHA384. Si el CDN es comprometido, el browser rechaza el archivo. |
+| **Docker image pinning** | `php:8.2-apache@sha256:...` en lugar de tag flotante. Garantiza imagen exacta. |
+| **Sin credenciales hardcodeadas** | `db.php` falla si no encuentra env vars. No hay fallback a defaults. |
+
+### 14.2 Session Security
+
+Las versiones `_secure.php` implementan:
+
+```php
+ini_set('session.cookie_httponly', 1);    // JS no puede leer la cookie
+ini_set('session.cookie_samesite', 'Strict'); // Previene CSRF via cookies
+ini_set('session.use_strict_mode', 1);    // Rechaza session IDs inventados
+```
+
+### 14.3 CSP Headers
+
+`buscar_secure.php` incluye Content Security Policy como defensa en profundidad:
+
+```php
+header("Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; ...");
+```
+
+Incluso si un XSS escapara el `htmlspecialchars()`, el browser bloquea scripts inline.
+
+### 14.4 CSRF (Vulnerabilidad Histórica)
+
+Incluida en A10 como bonus pedagógico:
+- **Versión vulnerable:** Sin token, cualquier sitio puede enviar el form.
+- **Versión segura:** Token generado con `bin2hex(random_bytes(32))`, validado con `hash_equals()`.
+
+**Razón de inclusión:** CSRF salió del Top 10 en 2017 porque los frameworks lo mitigan por defecto. Este proyecto usa PHP puro — exactamente donde CSRF sigue siendo un problema real.
+
+### 14.5 Aislamiento de Red (ya documentado en §10)
+
+- Contenedor `web` en red `internal: true` — sin salida a internet.
+- El backdoor de A03 intenta exfiltrar pero falla silenciosamente.
+- Ningún webshell subido puede conectar a C2 externos.
 
 ---
 

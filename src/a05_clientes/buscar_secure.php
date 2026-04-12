@@ -6,11 +6,24 @@
  * PROTECCIONES:
  * 1. Prepared statements con PDO (previene SQL Injection)
  * 2. htmlspecialchars() en todo el output (previene XSS)
+ * 3. CSP header (defensa en profundidad contra XSS)
+ * 4. Session config segura (HttpOnly, SameSite)
  * 
  * Este archivo demuestra las buenas practicas.
  */
 
+// SEGURO: Session config antes de session_start()
+ini_set('session.cookie_httponly', 1);
+ini_set('session.cookie_samesite', 'Strict');
+ini_set('session.use_strict_mode', 1);
 session_start();
+
+// SEGURO: Content Security Policy
+// Esto es defensa en profundidad - incluso si se escapara un XSS,
+// el browser bloquea la ejecucion de scripts inline
+header("Content-Security-Policy: default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data:; frame-ancestors 'none'");
+header("X-Content-Type-Options: nosniff");
+header("X-Frame-Options: DENY");
 
 $_SESSION['user_id'] = $_SESSION['user_id'] ?? 2;
 $_SESSION['username'] = $_SESSION['username'] ?? 'alice';
@@ -24,10 +37,12 @@ $labInfo = [
     'name' => 'Injection (SEGURO)',
     'difficulty' => 'Intermedia',
     'description' => '
-        <p>Esta version <strong>previene ambas vulnerabilidades</strong>:</p>
+        <p>Esta version implementa <strong>defensa en profundidad</strong>:</p>
         <ol>
-            <li><strong>SQL Injection:</strong> Usa prepared statements con PDO</li>
-            <li><strong>XSS:</strong> Usa htmlspecialchars() en todo el output</li>
+            <li><strong>SQL Injection:</strong> Prepared statements con PDO</li>
+            <li><strong>XSS:</strong> htmlspecialchars() en todo el output</li>
+            <li><strong>CSP header:</strong> Bloquea scripts inline como backup</li>
+            <li><strong>Session segura:</strong> HttpOnly, SameSite=Strict</li>
         </ol>
         <p class="mb-0">Proba los mismos payloads que en buscar.php - no van a funcionar.</p>
     ',

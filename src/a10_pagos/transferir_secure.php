@@ -6,11 +6,22 @@
  * PROTECCIONES:
  * 1. Failing closed: Si algo falla, responde "error" con codigo HTTP apropiado
  * 2. Sin stack trace: Solo mensaje generico al usuario, log interno detallado
+ * 3. Token CSRF: Valida que el request venga de nuestro formulario
+ * 4. Session config segura: HttpOnly, SameSite
  * 
- * Este es el manejo correcto de excepciones.
+ * Este es el manejo correcto de excepciones y seguridad de formularios.
  */
 
+// SEGURO: Session config antes de session_start()
+ini_set('session.cookie_httponly', 1);
+ini_set('session.cookie_samesite', 'Strict');
+ini_set('session.use_strict_mode', 1);
 session_start();
+
+// Generar token CSRF si no existe
+if (!isset($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+}
 
 $_SESSION['user_id'] = $_SESSION['user_id'] ?? 2;
 $_SESSION['username'] = $_SESSION['username'] ?? 'alice';
@@ -32,16 +43,36 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST' && !isset($_GET['demo'])) {
         'id' => 'A10:2025',
         'name' => 'Mishandling of Exceptional Conditions (SEGURO)',
         'difficulty' => 'Avanzada',
-        'description' => '<p>Este endpoint maneja correctamente las excepciones.</p>',
+        'description' => '
+            <p>Este endpoint implementa <strong>todas las protecciones</strong>:</p>
+            <ol>
+                <li><strong>Fail closed:</strong> Si algo falla, reporta error (no success)</li>
+                <li><strong>Sin stack trace:</strong> Errores genericos al usuario, log interno</li>
+                <li><strong>Token CSRF:</strong> Valida origen del request</li>
+                <li><strong>Session segura:</strong> HttpOnly, SameSite=Strict</li>
+            </ol>
+        ',
         'exploit' => '# Estos ataques NO funcionan aqui:
-curl -X POST http://localhost:8082/a10_pagos/transferir_secure.php -d "to_user=999&amount=100"
-# Responde: error (no success)
 
-curl -X POST http://localhost:8082/a10_pagos/transferir_secure.php -d "to_user=\' OR 1=1--&amount=100"
-# Responde: error generico (sin stack trace)',
-        'prevention' => 'Este archivo ES la version segura',
+# Failing open - responde error correctamente
+curl -X POST .../transferir_secure.php -d "to_user=999&amount=100"
+# Respuesta: {"status":"error","code":"CSRF_INVALID"}
+
+# CSRF - requiere token valido de la sesion
+# Sin el token, el request es rechazado con 403
+
+# Stack trace - no expone nada interno
+curl -X POST .../transferir_secure.php -d "to_user=\' OR 1=1--&amount=100"
+# Respuesta: error generico sin credenciales',
+        'prevention' => 'Este archivo ES la version segura.
+
+Protecciones implementadas:
+1. hash_equals() para comparar CSRF token
+2. error_log() para detalles, json generico al user
+3. http_response_code() apropiado (400, 403, 500)
+4. session config con httponly y samesite',
         'caseStudy' => ['title' => 'Knight Capital (2012)', 'description' => 'Si hubieran fallado cerrado, no habrian perdido $440M'],
-        'cwes' => ['CWE-636', 'CWE-209'],
+        'cwes' => ['CWE-636', 'CWE-209', 'CWE-352'],
         'tools' => ['curl'],
     ];
     
@@ -114,6 +145,30 @@ if (isset($_GET['demo'])) {
         'message' => 'No se pudo completar la transferencia. Por favor intente nuevamente.',
         'code' => 'TRANSFER_FAILED'
     ], JSON_PRETTY_PRINT);
+    exit;
+}
+
+// ========================================
+// SEGURIDAD: Validación de token CSRF
+// ========================================
+// El token debe coincidir con el de la sesión.
+// Esto previene que un sitio malicioso ejecute transferencias
+// en nombre del usuario sin su conocimiento.
+
+$csrfToken = $_POST['csrf_token'] ?? '';
+
+if (!hash_equals($_SESSION['csrf_token'] ?? '', $csrfToken)) {
+    // Log del intento (para detectar ataques)
+    error_log("[CSRF BLOCKED] IP: " . ($_SERVER['REMOTE_ADDR'] ?? 'unknown') . 
+              " | User: " . ($_SESSION['user_id'] ?? 'none') .
+              " | Token provided: " . substr($csrfToken, 0, 10) . "...");
+    
+    http_response_code(403);
+    echo json_encode([
+        'status' => 'error',
+        'message' => 'Token de seguridad invalido. Recarga la pagina e intenta de nuevo.',
+        'code' => 'CSRF_INVALID'
+    ]);
     exit;
 }
 

@@ -27,6 +27,17 @@ services:
     depends_on:
       - web
     restart: unless-stopped
+    #
+    # HARDENING: Nginx con privilegios mínimos
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN                     # Para logs y pid file
+      - SETUID                    # Para worker processes
+      - SETGID                    # Para worker processes
+      - NET_BIND_SERVICE          # Para bind a puertos < 1024 (80, 443)
 
   web:
     build: ./php
@@ -49,6 +60,18 @@ services:
       - db
     restart: unless-stopped
     # SIN ports expuestos - solo accesible via nginx
+    # 
+    # HARDENING: Limitar capabilities del contenedor
+    # Aunque el lab es vulnerable, el contenedor tiene privilegios mínimos
+    security_opt:
+      - no-new-privileges:true    # Previene escalación de privilegios via setuid
+    cap_drop:
+      - ALL                       # Quita TODAS las capabilities por defecto
+    cap_add:
+      - CHOWN                     # Necesario para Apache (cambiar ownership de archivos)
+      - SETUID                    # Necesario para Apache (cambiar a www-data)
+      - SETGID                    # Necesario para Apache (cambiar grupo)
+      - DAC_OVERRIDE              # Necesario para Apache (acceder a archivos)
 
   db:
     image: mariadb:10.11
@@ -66,6 +89,17 @@ services:
       - backend
     restart: unless-stopped
     # SIN ports expuestos - solo accesible desde web
+    #
+    # HARDENING: Privilegios mínimos para MariaDB
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN                     # Necesario para inicialización de MariaDB
+      - SETUID                    # Necesario para cambiar a usuario mysql
+      - SETGID                    # Necesario para cambiar grupo
+      - DAC_OVERRIDE              # Necesario para acceso a archivos de datos
 
   certbot:
     image: certbot/certbot

@@ -3,9 +3,15 @@
  * OWASP Top 10 Labs 2025 - A01: Broken Access Control
  * Módulo: Mis Facturas - Ver detalle (VERSIÓN SEGURA)
  * 
- * ✅ SEGURO: Verifica que la factura pertenezca al usuario autenticado.
+ * ✅ SEGURO: 
+ * - Verifica que la factura pertenezca al usuario autenticado
+ * - Session config segura (HttpOnly, SameSite)
  */
 
+// SEGURO: Session config antes de session_start()
+ini_set('session.cookie_httponly', 1);
+ini_set('session.cookie_samesite', 'Strict');
+ini_set('session.use_strict_mode', 1);
 session_start();
 
 // Simular usuario logueado

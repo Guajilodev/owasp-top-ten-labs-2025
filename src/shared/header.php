@@ -18,8 +18,13 @@ $pageTitle = $pageTitle ?? 'Nexo';
     <meta name="robots" content="noindex, nofollow">
     <title><?= htmlspecialchars($pageTitle) ?></title>
     
-    <!-- Bootstrap 5 CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+    <!-- Bootstrap 5 CSS (con SRI - Subresource Integrity) -->
+    <!-- IMPORTANTE: Si el hash no coincide, el browser rechaza el archivo -->
+    <!-- Esto previene ataques de Supply Chain via CDN comprometido -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" 
+          rel="stylesheet" 
+          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH" 
+          crossorigin="anonymous">
     
     <!-- Estilos custom de Nexo -->
     <style>
@@ -59,9 +64,31 @@ $pageTitle = $pageTitle ?? 'Nexo';
             box-shadow: -4px 0 10px rgba(0,0,0,0.1);
         }
         
+        /* Botón X dentro del panel */
+        .lab-panel-close {
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            background-color: #dc3545;
+            border: none;
+            border-radius: 4px;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            line-height: 28px;
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        .lab-panel-close:hover {
+            background-color: #a71d2a;
+        }
+        
+        /* Botón externo para abrir (solo visible cuando cerrado) */
         .lab-panel-toggle {
             position: fixed;
-            right: 500px;
+            right: 0;
             top: 70px;
             z-index: 1001;
             background: #dc3545;
@@ -70,14 +97,18 @@ $pageTitle = $pageTitle ?? 'Nexo';
             padding: 0.5rem 0.75rem;
             border-radius: 4px 0 0 4px;
             cursor: pointer;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s;
         }
         
         .lab-panel.collapsed {
             transform: translateX(100%);
         }
         
-        .lab-panel.collapsed + .lab-panel-toggle {
-            right: 0;
+        .lab-panel.collapsed ~ .lab-panel-toggle {
+            opacity: 1;
+            pointer-events: auto;
         }
         
         /* Ajuste del contenido principal cuando hay panel */
@@ -98,7 +129,7 @@ $pageTitle = $pageTitle ?? 'Nexo';
             .lab-panel-toggle {
                 right: 10px;
                 top: auto;
-                bottom: 50vh;
+                bottom: 0;
                 border-radius: 4px 4px 0 0;
             }
             
@@ -106,13 +137,13 @@ $pageTitle = $pageTitle ?? 'Nexo';
                 transform: translateY(100%);
             }
             
-            .lab-panel.collapsed + .lab-panel-toggle {
-                bottom: 0;
-            }
-            
             body.has-lab-panel main {
                 margin-right: 0;
                 margin-bottom: 50vh;
+            }
+            
+            body.has-lab-panel.panel-collapsed main {
+                margin-bottom: 0;
             }
         }
         

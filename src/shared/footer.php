@@ -25,19 +25,29 @@
         </div>
     </footer>
     
-    <!-- Bootstrap JS -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+    <!-- Bootstrap JS (con SRI - Subresource Integrity) -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" 
+            integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz" 
+            crossorigin="anonymous"></script>
     
     <!-- Lab panel toggle -->
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            const toggle = document.querySelector('.lab-panel-toggle');
             const panel = document.querySelector('.lab-panel');
+            const closeBtn = document.querySelector('.lab-panel-close');
+            const openBtn = document.querySelector('.lab-panel-toggle');
             
-            if (toggle && panel) {
-                toggle.addEventListener('click', function() {
-                    panel.classList.toggle('collapsed');
-                    this.textContent = panel.classList.contains('collapsed') ? '◀ Lab Info' : '▶ Ocultar';
+            if (panel && closeBtn && openBtn) {
+                // Cerrar panel (X dentro del panel)
+                closeBtn.addEventListener('click', function() {
+                    panel.classList.add('collapsed');
+                    document.body.classList.add('panel-collapsed');
+                });
+                
+                // Abrir panel (botón externo)
+                openBtn.addEventListener('click', function() {
+                    panel.classList.remove('collapsed');
+                    document.body.classList.remove('panel-collapsed');
                 });
             }
         });

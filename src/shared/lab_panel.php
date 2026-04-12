@@ -38,7 +38,10 @@ $difficultyColor = $difficultyColors[$labInfo['difficulty']] ?? 'secondary';
                 <span class="badge bg-danger fs-6"><?= htmlspecialchars($labInfo['id']) ?></span>
                 <span class="badge bg-<?= $difficultyColor ?>"><?= htmlspecialchars($labInfo['difficulty']) ?></span>
             </div>
-            <span class="badge bg-dark">🔴 VULNERABLE</span>
+            <div class="d-flex align-items-center gap-2">
+                <span class="badge bg-dark">🔴 VULNERABLE</span>
+                <button type="button" class="lab-panel-close" aria-label="Cerrar panel">✕</button>
+            </div>
         </div>
         
         <h5 class="text-danger mb-3">
@@ -145,7 +148,7 @@ $difficultyColor = $difficultyColors[$labInfo['difficulty']] ?? 'secondary';
     </div>
 </aside>
 
-<!-- Toggle button -->
-<button class="lab-panel-toggle" type="button">
-    ▶ Ocultar
+<!-- Toggle button (solo visible cuando el panel está cerrado) -->
+<button class="lab-panel-toggle" type="button" aria-label="Abrir panel de lab">
+    ◀ Lab
 </button>

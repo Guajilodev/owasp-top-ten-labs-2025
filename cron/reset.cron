@@ -25,9 +25,24 @@
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
-# Variables de entorno (cambiar en producción)
-NEXO_DB_USER=nexo_user
-NEXO_DB_PASS=nexo_password_2025
+# ============================================
+# VARIABLES DE ENTORNO - CONFIGURAR EN EL HOST
+# ============================================
+# Las credenciales NO van en este archivo.
+# Configurarlas en /etc/environment o exportarlas antes de instalar el cron:
+#
+#   echo 'NEXO_DB_USER=tu_usuario' | sudo tee -a /etc/environment
+#   echo 'NEXO_DB_PASS=tu_password_seguro' | sudo tee -a /etc/environment
+#   source /etc/environment
+#
+# O definirlas en el crontab del root:
+#   sudo crontab -e
+#   NEXO_DB_USER=tu_usuario
+#   NEXO_DB_PASS=tu_password_seguro
+#   (luego las líneas del cron)
+#
+# NUNCA commitear credenciales reales en este archivo.
+# ============================================
 
 # ============================================
 # Reset de base de datos - cada 4 horas
@@ -58,4 +73,5 @@ NEXO_DB_PASS=nexo_password_2025
 # ============================================
 # Semanal (lunes 3am) - Certbot solo renueva si falta <30 días
 
-0 3 * * 1 root cd /ruta/a/owasp2025 && docker compose run --rm certbot renew --quiet && docker compose exec nginx nginx -s reload >> /var/log/nexo-reset.log 2>&1
+# IMPORTANTE: Cambiar /opt/owasp2025 a la ruta real donde clonaste el proyecto
+0 3 * * 1 root cd /opt/owasp2025 && docker compose run --rm certbot renew --quiet && docker compose exec nginx nginx -s reload >> /var/log/nexo-reset.log 2>&1
