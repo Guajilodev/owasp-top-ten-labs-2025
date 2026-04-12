@@ -11,8 +11,11 @@ services:
     image: nginx:alpine
     container_name: owasp-nginx-2025
     ports:
-      - "80:80"
-      - "443:443"
+      # En desarrollo: usar 8082 (override agrega este)
+      # En producción: descomentar estos y eliminar el override
+      # - "80:80"
+      # - "443:443"
+      - "8082:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
