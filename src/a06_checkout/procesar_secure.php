@@ -10,6 +10,10 @@
  * Este es el diseno correcto para un checkout.
  */
 
+// CSP + HttpOnly para defensa en profundidad
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self'; frame-ancestors 'self';");
+ini_set('session.cookie_httponly', 1);
+ini_set('session.cookie_samesite', 'Strict');
 session_start();
 
 $_SESSION['user_id'] = $_SESSION['user_id'] ?? 2;
@@ -231,7 +235,7 @@ $product = getProductById($productId);
 $amount = $product['price'];  // $<?= number_format($order['unit_price'], 0, ',', '.') ?> (de la BD)
 
 // El campo "price" del POST se IGNORA COMPLETAMENTE
-// $_POST['price'] = <?= $order['attempted_price'] ?>  <-- Ignorado
+// $_POST['price'] = <?= htmlspecialchars($order['attempted_price'] ?? '') ?>  <-- Ignorado
 
 // Procesa el pago con el precio REAL
 procesarPago($user, $amount);</code></pre>

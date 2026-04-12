@@ -14,6 +14,10 @@
  * NO USAR EN PRODUCCION - Solo para fines educativos
  */
 
+// CSP + HttpOnly para defensa en profundidad (no afecta la vuln de precio)
+header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; connect-src 'self'; frame-ancestors 'self';");
+ini_set('session.cookie_httponly', 1);
+ini_set('session.cookie_samesite', 'Strict');
 session_start();
 
 $_SESSION['user_id'] = $_SESSION['user_id'] ?? 2;
