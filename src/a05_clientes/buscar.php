@@ -56,6 +56,7 @@ echo htmlspecialchars($row[\'name\']); // CON escapar',
     ],
     'cwes' => ['CWE-89', 'CWE-79'],
     'tools' => ['SQLMap', 'Burp Suite', 'curl'],
+    'secureVersion' => 'buscar_secure.php',
 ];
 
 $searchTerm = $_GET['q'] ?? '';

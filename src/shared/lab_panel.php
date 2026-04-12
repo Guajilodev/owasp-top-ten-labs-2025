@@ -133,6 +133,15 @@ $difficultyColor = $difficultyColors[$labInfo['difficulty']] ?? 'secondary';
         </div>
         <?php endif; ?>
         
+        <!-- Boton version segura -->
+        <?php if (!empty($labInfo['secureVersion'])): ?>
+        <div class="mt-3 pt-3 border-top">
+            <a href="<?= htmlspecialchars($labInfo['secureVersion']) ?>" class="btn btn-success w-100">
+                🛡️ Ver versión segura
+            </a>
+        </div>
+        <?php endif; ?>
+        
     </div>
 </aside>
 

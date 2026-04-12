@@ -53,6 +53,7 @@ $stmt->execute([$id, $_SESSION[\'user_id\']]);',
     ],
     'cwes' => ['CWE-639', 'CWE-285'],
     'tools' => ['curl', 'Burp Suite'],
+    'secureVersion' => 'ver_secure.php',
 ];
 
 $invoice = null;

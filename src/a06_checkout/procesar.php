@@ -52,6 +52,7 @@ procesarPago($user, $amount);',
     ],
     'cwes' => ['CWE-602', 'CWE-840'],
     'tools' => ['Burp Suite', 'curl', 'DevTools'],
+    'secureVersion' => 'procesar_secure.php',
 ];
 
 // Obtener datos del POST

@@ -43,6 +43,7 @@ curl -X POST http://localhost:8082/a10_pagos/transferir.php -d "to_user=\' OR 1=
         'caseStudy' => ['title' => 'Knight Capital (2012)', 'description' => '$440M perdidos por excepcion no manejada'],
         'cwes' => ['CWE-636', 'CWE-209'],
         'tools' => ['curl'],
+        'secureVersion' => 'transferir_secure.php',
     ];
     
     include __DIR__ . '/../shared/header.php';
