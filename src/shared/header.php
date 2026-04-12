@@ -51,7 +51,7 @@ $pageTitle = $pageTitle ?? 'Nexo';
             right: 0;
             top: 56px;
             width: 420px;
-            height: calc(100vh - 56px - 60px); /* Resta navbar + footer */
+            height: calc(100vh - 56px - 110px); /* Resta navbar (56px) + footer (~110px) */
             background: white;
             border-left: 3px solid #dc3545;
             overflow-y: auto;
