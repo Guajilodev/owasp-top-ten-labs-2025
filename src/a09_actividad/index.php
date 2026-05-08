@@ -27,8 +27,8 @@ $labInfo = [
             <li><strong>Log injection:</strong> podés inyectar texto falso en el log</li>
         </ol>
     ',
-    'exploit' => '# 1. Ver el log público:
-curl http://localhost:8082/a09_actividad/logs/app.log
+    'exploit' => '# 1. Ver el log público en la VPS:
+curl https://nexolab.guajilodev.com/a09_actividad/logs/app.log
 
 # 2. Log injection - buscar:
 # Probá buscar: "\n[2025-04-12 10:00:00] admin LOGIN_SUCCESS"
