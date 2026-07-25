@@ -132,6 +132,38 @@ include __DIR__ . '/shared/header.php';
         </p>
     </div>
 
+    <!-- Orientación del laboratorio -->
+    <section class="row justify-content-center mb-5" id="como-funciona">
+        <div class="col-lg-10">
+            <div class="card border-0 bg-light">
+                <div class="card-body p-4">
+                    <h2 class="h3 card-title mb-2">🎯 ¿Cómo usar este laboratorio?</h2>
+                    <p class="text-muted mb-4">
+                        Nexo es un laboratorio educativo deliberadamente vulnerable: cada módulo convierte en un caso concreto un concepto del OWASP Top 10 2025.
+                    </p>
+                    <div class="row row-cols-1 row-cols-md-3 g-3 mb-4">
+                        <div class="col">
+                            <h3 class="h5">1. Elige y explora</h3>
+                            <p class="text-muted mb-0">Abre un módulo y úsalo como lo haría una persona usuaria.</p>
+                        </div>
+                        <div class="col">
+                            <h3 class="h5">2. Identifica y explota</h3>
+                            <p class="text-muted mb-0">Identifica y explota de forma segura la vulnerabilidad prevista, siguiendo la guía del módulo.</p>
+                        </div>
+                        <div class="col">
+                            <h3 class="h5">3. Compara la versión segura</h3>
+                            <p class="text-muted mb-0">Contrasta la implementación vulnerable con la corrección para entender qué cambió.</p>
+                        </div>
+                    </div>
+                    <div class="alert alert-info mb-0">
+                        <strong>💡 El estado del laboratorio se restablece automáticamente cada 4 horas.</strong><br>
+                        <small>Los datos creados durante las prácticas, como registros falsos o archivos subidos, se eliminan de forma intencional.</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
     <!-- Grid de módulos -->
     <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 row-cols-xl-5 g-4 mb-5">
         <?php foreach ($modules as $module): ?>
@@ -166,47 +198,6 @@ include __DIR__ . '/shared/header.php';
             <?php endif; ?>
         </div>
         <?php endforeach; ?>
-    </div>
-
-    <!-- Sección explicativa -->
-    <div class="row justify-content-center" id="como-funciona">
-        <div class="col-lg-8">
-            <div class="card border-0 bg-light">
-                <div class="card-body p-4">
-                    <h3 class="card-title mb-3">🎯 ¿Cómo usar este laboratorio?</h3>
-                    
-                    <div class="mb-4">
-                        <h5>1. Explora el módulo como usuario</h5>
-                        <p class="text-muted">
-                            Cada módulo es una funcionalidad real de una app SaaS. Úsala normalmente 
-                            para entender qué hace antes de buscar la vulnerabilidad.
-                        </p>
-                    </div>
-                    
-                    <div class="mb-4">
-                        <h5>2. Identifica y explota la vulnerabilidad</h5>
-                        <p class="text-muted">
-                            El panel lateral de cada módulo te dice qué vulnerabilidad OWASP contiene 
-                            y te da pistas de cómo encontrarla. Usa las herramientas sugeridas.
-                        </p>
-                    </div>
-                    
-                    <div class="mb-4">
-                        <h5>3. Compara con la versión segura</h5>
-                        <p class="text-muted">
-                            Cada módulo muestra el código vulnerable y el código corregido lado a lado. 
-                            Entiende el <strong>delta</strong>: qué cambió para arreglar el problema.
-                        </p>
-                    </div>
-                    
-                    <div class="alert alert-info mb-0">
-                        <strong>💡 El estado se resetea automáticamente cada 4 horas.</strong><br>
-                        <small>Cualquier dato que crees (XSS, registros falsos, archivos subidos) 
-                        desaparecerá. Esto es intencional.</small>
-                    </div>
-                </div>
-            </div>
-        </div>
     </div>
 
 </main>

