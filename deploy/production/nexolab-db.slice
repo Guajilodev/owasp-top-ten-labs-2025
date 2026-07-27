@@ -1,0 +1,6 @@
+[Unit]
+Description=Nexolab database containment slice
+PartOf=nexolab.slice
+
+[Slice]
+MemorySwapMax=0

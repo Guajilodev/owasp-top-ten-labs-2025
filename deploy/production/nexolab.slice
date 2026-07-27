@@ -1,0 +1,7 @@
+[Unit]
+Description=Nexolab containment parent slice
+
+[Slice]
+# This is inherited by every Nexolab container when Docker uses the systemd
+# cgroup driver. It is the authoritative runtime swap control.
+MemorySwapMax=0

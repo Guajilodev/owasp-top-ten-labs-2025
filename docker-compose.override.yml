@@ -15,7 +15,8 @@ services:
     # En desarrollo, usamos nexo-local.conf (nexo.conf.prod está deshabilitado)
     # No hace falta override de volumes
     ports:
-      - "8082:80"
+      - "127.0.0.1:8082:80"
+      - "[::1]:8082:80"
 
   web:
     # En desarrollo, exponemos el puerto para debug directo (opcional)

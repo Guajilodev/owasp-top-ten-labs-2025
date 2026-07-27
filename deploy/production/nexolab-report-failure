@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Persist actionable containment failures without exposing secret values.
+set -euo pipefail
+
+readonly LOG_FILE="/var/log/nexolab-containment-failures.log"
+component="${1:-unknown}"
+message="${2:-unspecified failure}"
+timestamp="$(date -u +%FT%TZ)"
+
+install -d -m 0750 /var/log
+(
+  flock -x 9
+  printf '%s component=%s failure=%s\n' "$timestamp" "$component" "$message" >>"$LOG_FILE"
+) 9>"${LOG_FILE}.lock"
+chmod 0640 "$LOG_FILE"
+logger -p daemon.err -t nexolab-containment -- "component=${component} failure=${message}" || true

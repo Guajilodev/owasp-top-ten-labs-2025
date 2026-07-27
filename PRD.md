@@ -670,29 +670,16 @@ server {
 
 ### 10.4 Cron job de reset automático
 
-Archivo `cron/reset.cron` — se instala en la VPS con `crontab -e` o copiando a `/etc/cron.d/`:
+El artefacto de producción es `deploy/production/nexolab-reset.cron`; invoca el
+script `nexolab-reset` con credenciales root del host, lock acotado y recuperación
+completa. No se instala un `SOURCE init.sql` con la cuenta de la aplicación:
 
 ```bash
-# Reset automático de Nexo Labs cada 4 horas
-# Trunca tablas con datos generados por explotaciones y re-inserta seed data
-# Sin downtime — el contenedor sigue corriendo
-
-# Reset de base de datos
-0 */4 * * * root docker exec owasp-db-2025 \
-  mysql -u"${NEXO_DB_USER}" -p"${NEXO_DB_PASS}" nexo_labs \
-  -e "SOURCE /docker-entrypoint-initdb.d/init.sql" >> /var/log/nexo-reset.log 2>&1
-
-# Limpiar archivos subidos (lab A02) — tmpfs se limpia solo al reiniciar,
-# pero esto garantiza limpieza durante uptime largo
-0 */4 * * * root docker exec owasp-web-2025 \
-  find /var/www/html/a02_admin/uploads -type f -not -name ".gitkeep" -delete
-
-# Limpiar logs del lab A09
-0 */4 * * * root docker exec owasp-web-2025 \
-  sh -c "> /var/log/nexo/app.log"
+0 */4 * * * root /usr/local/sbin/nexolab-reset reset >> /var/log/nexolab-reset.log 2>&1
 ```
 
-**Importante:** Las variables `NEXO_DB_USER` y `NEXO_DB_PASS` se leen del `.env` de la VPS o se definen directamente en el cron. No van hardcodeadas.
+El runbook `deploy/production/README.md` documenta la instalación, validación y
+rollback del reset. Las credenciales siguen en `.env`, nunca en cron.
 
 ### 10.5 TLS con Let's Encrypt
 

@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+# Verify host-enforced cgroup controls after the production containers start.
+
+set -euo pipefail
+
+readonly WEB_CONTAINER="owasp-web-2025"
+readonly DB_CONTAINER="owasp-db-2025"
+readonly MIN_DOCKER_MAJOR=28
+
+report_failure() {
+  if [ -x /usr/local/sbin/nexolab-report-failure ]; then
+    /usr/local/sbin/nexolab-report-failure runtime-verify "$*" || true
+  fi
+}
+fail() { report_failure "$*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+network_id() {
+  local role="$1" id
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if [ "$(docker network inspect "$id" --format '{{ index .Labels "com.docker.compose.network" }}')" = "$role" ]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done < <(docker network ls -q --filter 'label=com.docker.compose.project=owasp2025')
+  fail "Could not discover the ${role} Compose network."
+}
+
+verify_internal_networks() {
+  local role
+  for role in frontend backend; do
+    [ "$(docker network inspect "$(network_id "$role")" --format '{{.Internal}}')" = true ] || \
+      fail "The ${role} network must be internal to block Docker DNS forwarding."
+  done
+}
+
+container_cgroup_path() {
+  local container="$1" pid path
+  pid="$(docker inspect --format '{{.State.Pid}}' "$container")"
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || fail "Container is not running: $container"
+  path="$(awk -F: '$1 == "0" { print $3 }' "/proc/${pid}/cgroup")"
+  [ -n "$path" ] || fail "Could not locate the unified cgroup for $container."
+  printf '%s\n' "/sys/fs/cgroup${path}"
+}
+
+verify_container() {
+  local container="$1" expected_slice="$2" cgroup_path memory_swap
+  [ "$(docker inspect --format '{{.HostConfig.CgroupParent}}' "$container")" = "$expected_slice" ] || \
+    fail "$container is not assigned to $expected_slice."
+  cgroup_path="$(container_cgroup_path "$container")"
+  [[ "$cgroup_path" == *"/${expected_slice}/"* ]] || fail "$container escaped expected cgroup slice: $cgroup_path"
+  memory_swap="$(<"${cgroup_path}/memory.swap.max")"
+  [ "$memory_swap" = "0" ] || fail "$container has effective memory.swap.max=$memory_swap, expected 0."
+  printf 'OK %s: cgroup=%s memory.swap.max=0\n' "$container" "$cgroup_path"
+}
+
+verify_db_volume() {
+  local volume_name container_source volume_driver volume_type volume_options volume_device mountpoint expected_source source_device_id mount_device_id
+  volume_name="$(docker inspect --format '{{range .Mounts}}{{if and (eq .Destination "/var/lib/mysql") (eq .Type "volume")}}{{.Name}}{{end}}{{end}}' "$DB_CONTAINER")"
+  [ -n "$volume_name" ] || fail 'MariaDB does not have a named volume mounted at /var/lib/mysql.'
+  container_source="$(docker inspect --format '{{range .Mounts}}{{if and (eq .Destination "/var/lib/mysql") (eq .Type "volume")}}{{.Source}}{{end}}{{end}}' "$DB_CONTAINER")"
+  [ -n "$container_source" ] || fail 'MariaDB named-volume mount has no runtime source.'
+  volume_driver="$(docker volume inspect --format '{{.Driver}}' "$volume_name")"
+  volume_type="$(docker volume inspect --format '{{index .Options "type"}}' "$volume_name")"
+  volume_options="$(docker volume inspect --format '{{index .Options "o"}}' "$volume_name")"
+  volume_device="$(docker volume inspect --format '{{index .Options "device"}}' "$volume_name")"
+  [ "$volume_driver" = local ] || fail "MariaDB volume $volume_name must use the local driver."
+  [ "$volume_type" = none ] || fail "MariaDB volume $volume_name is not a bind-backed local volume."
+  [[ ",$volume_options," == *,bind,* ]] || fail "MariaDB volume $volume_name lacks the bind option."
+  expected_source="$(realpath -e "$NEXOLAB_DB_STORAGE_PATH")" || fail 'Approved DB storage path is unavailable.'
+  [ "$(realpath -e "$volume_device")" = "$expected_source" ] || \
+    fail "MariaDB volume device does not resolve to approved storage '$expected_source'."
+  mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' "$volume_name")"
+  mountpoint -q "$mountpoint" || fail "MariaDB volume mountpoint is not mounted: $mountpoint"
+  [ "$(realpath -e "$container_source")" = "$(realpath -e "$mountpoint")" ] || \
+    fail 'MariaDB container mount is not attached to the inspected named-volume mountpoint.'
+  source_device_id="$(findmnt -n -o MAJ:MIN --target "$expected_source")"
+  mount_device_id="$(findmnt -n -o MAJ:MIN --target "$mountpoint")"
+  if [ -z "$source_device_id" ] || [ "$mount_device_id" != "$source_device_id" ]; then
+    fail 'MariaDB named-volume mount is not backed by the approved storage device.'
+  fi
+}
+
+[ "$(docker info --format '{{.CgroupDriver}}')" = "systemd" ] || \
+  fail 'Docker must use the systemd cgroup driver; Compose memswap_limit alone is not accepted.'
+docker_major="$(docker version --format '{{.Server.Version}}' | cut -d. -f1)"
+[[ "$docker_major" =~ ^[0-9]+$ && "$docker_major" -ge "$MIN_DOCKER_MAJOR" ]] || \
+  fail 'Docker Engine 28+ is required: older engines may expose loopback-published ports to the local L2 network.'
+verify_internal_networks
+verify_container "$WEB_CONTAINER" "nexolab-web.slice"
+verify_container "$DB_CONTAINER" "nexolab-db.slice"
+
+[ -x /usr/local/sbin/nexolab-storage ] || fail 'Required storage verifier is not installed.'
+/usr/local/sbin/nexolab-storage verify
+[ -r /etc/nexolab/storage.env ] || fail 'Required storage configuration is unavailable.'
+# shellcheck disable=SC1091
+. /etc/nexolab/storage.env
+verify_db_volume
+
+printf 'Runtime containment verification passed.\n'

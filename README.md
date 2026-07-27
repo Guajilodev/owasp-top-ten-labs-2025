@@ -67,15 +67,18 @@ open http://localhost:8082
 ```
 
 La base de datos se inicializa automaticamente con datos de ejemplo.
-Docker Compose dynamically allocates the project networks; services communicate through their service names (`web` and `db`) rather than fixed container IP addresses.
+Docker Compose dynamically allocates the project networks; services communicate through their service names (`web` and `db`) rather than fixed container IP addresses. See [Local Docker Containment](docs/LOCAL_CONTAINMENT.md) before using the intentionally vulnerable lab on a shared local machine.
 
 ### Reset manual
 
 ```bash
-# Re-ejecutar el script de inicializacion
-docker exec owasp-db mariadb -u"$NEXO_DB_USER" -p"$NEXO_DB_PASS" nexo_labs \
+# Solo desarrollo local: re-ejecutar el script de inicializacion
+docker compose exec -T db mariadb -u"$NEXO_DB_USER" -p"$NEXO_DB_PASS" nexo_labs \
   -e "SOURCE /docker-entrypoint-initdb.d/init.sql"
 ```
+
+No uses este atajo en producción: usa el reset autenticado y acotado del
+[runbook de producción](deploy/production/README.md).
 
 ## Deploy en Produccion (Seguro)
 
@@ -87,233 +90,54 @@ Si queres exponer el lab a internet (para workshops, clases, CTFs), **SEGUI ESTA
 Internet
     |
     v
-[nginx host:443] -----> [nexolab-web:80] -----> [nexolab-db:3306]
-     SSL                  |                           |
-     Rate Limit           |-- frontend network        |-- backend network
-                          |   (port publishing)           (internal only)
-                          |
-                    [iptables DOCKER-USER]
-                          |
-                          v
-                    BLOQUEA salida a internet
-                    (sin exfiltracion, sin C2)
+[host nginx :443] ---> [127.0.0.1:8082] ---> [owasp-web-2025:80] ---> [owasp-db-2025:3306]
+   TLS + rate limit          loopback only          backend (internal, dynamic)
 ```
+
+El puerto del contenedor `web` se publica **solo** en loopback. nginx corre en
+el host y es el unico proxy que debe alcanzarlo; `db` no publica puertos. La
+red `backend` queda `internal` y Docker asigna dinamicamente sus subnets y
+direcciones. La red `frontend` permite el encaminamiento que requiere el puerto
+loopback publicado; la política de firewall del host limita sus flujos nuevos a
+nginx del host y `web` → `db`.
+
+La configuración ejecutable es [`docker-compose.prod.yml`](docker-compose.prod.yml).
+Los artefactos de host (política de firewall por interfaces dinámicas, servicio
+systemd, reset y rotación del log) están en
+[`deploy/production/`](deploy/production/). No copies el Compose de desarrollo
+como configuración de producción.
 
 ### Principios de Seguridad
 
 1. **Aislamiento de red**: El contenedor web NO puede conectarse a internet
-2. **Redes separadas**: `frontend` para recibir requests, `backend` (internal) para DB
-3. **IP fija**: El contenedor web tiene IP fija para reglas de firewall persistentes
-4. **Sin credenciales en codigo**: Todo via variables de entorno
-5. **Capabilities minimas**: `cap_drop: ALL` + solo las necesarias
-6. **Reset automatico**: Cron job cada 4 horas limpia datos y uploads
+2. **Exposicion minima**: nginx del host hace proxy solo a `127.0.0.1:8082`; `web` y `db` no tienen puertos publicos
+3. **Red interna dinamica**: `backend` conecta `web` con `db`, sin IPs ni subnets fijas
+4. **Limites de recursos**: CPU, memoria, swap, PIDs y logs se limitan por servicio
+5. **Sin credenciales en codigo**: Todo via variables de entorno
+6. **Capabilities minimas**: `cap_drop: ALL` + solo las necesarias
+7. **Reset automatico**: Cron job cada 4 horas limpia datos y uploads
 
-### Pasos de Deploy
+### Runbook de deploy
 
-#### 1. Clonar en el servidor
-
-```bash
-cd /opt
-git clone https://github.com/guajilodev/owasp2025.git
-cd owasp2025
-```
-
-#### 2. Crear archivo .env con credenciales seguras
-
-```bash
-cat > .env << EOF
-NEXO_DB_HOST=db
-NEXO_DB_NAME=nexo_labs
-NEXO_DB_USER=nexo_prod_user
-NEXO_DB_PASS=$(openssl rand -base64 24)
-NEXO_DB_ROOT_PASS=$(openssl rand -base64 24)
-NEXO_ENV=production
-EOF
-
-chmod 600 .env
-```
-
-#### 3. Crear docker-compose.prod.yml
-
-```yaml
-services:
-  web:
-    build: ./php
-    container_name: nexolab-web
-    ports:
-      - "127.0.0.1:8082:80"
-    volumes:
-      - ./src:/var/www/html
-    tmpfs:
-      - /var/www/html/a02_admin/uploads:size=50m,mode=1777
-      - /var/log/nexo:size=20m
-    environment:
-      - NEXO_DB_HOST=${NEXO_DB_HOST}
-      - NEXO_DB_NAME=${NEXO_DB_NAME}
-      - NEXO_DB_USER=${NEXO_DB_USER}
-      - NEXO_DB_PASS=${NEXO_DB_PASS}
-      - NEXO_ENV=${NEXO_ENV}
-    networks:
-      frontend:
-        ipv4_address: 172.30.0.10
-      backend:
-    depends_on:
-      - db
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETUID
-      - SETGID
-      - DAC_OVERRIDE
-
-  db:
-    image: mariadb:10.11
-    container_name: nexolab-db
-    volumes:
-      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-      - ./mysql/my.cnf:/etc/mysql/conf.d/my.cnf:ro
-      - nexolab_db:/var/lib/mysql
-    environment:
-      - MARIADB_ROOT_PASSWORD=${NEXO_DB_ROOT_PASS}
-      - MARIADB_DATABASE=${NEXO_DB_NAME}
-      - MARIADB_USER=${NEXO_DB_USER}
-      - MARIADB_PASSWORD=${NEXO_DB_PASS}
-    networks:
-      - backend
-    restart: unless-stopped
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    cap_add:
-      - CHOWN
-      - SETUID
-      - SETGID
-      - DAC_OVERRIDE
-
-networks:
-  frontend:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.30.0.0/24
-  backend:
-    driver: bridge
-    internal: true
-
-volumes:
-  nexolab_db:
-    name: nexolab_db_prod
-```
-
-#### 4. Configurar nginx (en el host)
-
-```nginx
-server {
-    listen 80;
-    server_name tu-dominio.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name tu-dominio.com;
-
-    ssl_certificate /etc/letsencrypt/live/tu-dominio.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/tu-dominio.com/privkey.pem;
-
-    # Rate limiting
-    limit_req_zone $binary_remote_addr zone=nexo:10m rate=10r/s;
-    limit_req zone=nexo burst=20 nodelay;
-
-    location / {
-        proxy_pass http://127.0.0.1:8082;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-#### 5. Obtener certificado SSL
-
-```bash
-certbot --nginx -d tu-dominio.com
-```
-
-#### 6. Configurar firewall de aislamiento
-
-```bash
-# Crear servicio de systemd para persistencia
-cat > /etc/systemd/system/nexolab-firewall.service << 'EOF'
-[Unit]
-Description=Nexolab firewall rules for container isolation
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/bash -c "iptables -I DOCKER-USER -s 172.30.0.10 -d 172.16.0.0/12 -j ACCEPT; iptables -I DOCKER-USER -s 172.30.0.10 -d 10.0.0.0/8 -j ACCEPT; iptables -I DOCKER-USER -s 172.30.0.10 -d 127.0.0.0/8 -j ACCEPT; iptables -A DOCKER-USER -s 172.30.0.10 -m state --state NEW -j DROP"
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now nexolab-firewall.service
-```
-
-#### 7. Configurar cron de reset
-
-```bash
-cat > /etc/cron.d/nexolab-reset << 'EOF'
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-
-# Reset DB cada 4 horas
-0 */4 * * * root . /opt/owasp2025/.env && docker exec nexolab-db mariadb -u"${NEXO_DB_USER}" -p"${NEXO_DB_PASS}" nexo_labs -e "SOURCE /docker-entrypoint-initdb.d/init.sql" >> /var/log/nexolab-reset.log 2>&1
-
-# Limpiar uploads
-0 */4 * * * root docker exec nexolab-web find /var/www/html/a02_admin/uploads -type f -not -name ".gitkeep" -delete 2>/dev/null
-
-# Limpiar logs del lab A09
-0 */4 * * * root docker exec nexolab-web sh -c "> /var/log/nexo/app.log" 2>/dev/null
-
-# Renovar SSL (semanal)
-0 3 * * 1 root certbot renew --quiet && systemctl reload nginx
-EOF
-
-chmod 644 /etc/cron.d/nexolab-reset
-```
-
-#### 8. Levantar y verificar
-
-```bash
-docker compose -f docker-compose.prod.yml up -d
-
-# Verificar que la app funciona
-curl -s https://tu-dominio.com/ | grep -o "Nexo"
-
-# Verificar que el contenedor NO puede salir a internet
-docker exec nexolab-web curl -s --connect-timeout 3 https://google.com || echo "BLOCKED - OK"
-```
+El procedimiento reproducible de aprovisionamiento, validación, backup y rollback
+está en [deploy/production/README.md](deploy/production/README.md). No copies
+fragmentos de Compose a mano: `docker-compose.prod.yml` y ese runbook son la
+fuente de verdad. El flujo requerido es validación local → revisión →
+commit/push → pull/deploy aprobado en el VPS.
 
 ## Verificacion de Aislamiento
 
 Despues del deploy, verifica que el contenedor web este correctamente aislado:
 
 ```bash
-# Debe fallar (timeout/blocked)
-docker exec nexolab-web curl -s --connect-timeout 5 https://google.com
+# web queda disponible solo para nginx local en el puerto publicado
+curl --fail --silent --show-error http://127.0.0.1:8082/ >/dev/null
 
-# Debe funcionar (DB accesible)
-docker exec nexolab-web php -r "new PDO('mysql:host=db;dbname=nexo_labs', 'user', 'pass');"
+# db debe seguir accesible solo mediante el nombre de servicio interno
+docker exec owasp-web-2025 php -r 'new PDO("mysql:host=db;dbname=" . getenv("NEXO_DB_NAME"), getenv("NEXO_DB_USER"), getenv("NEXO_DB_PASS")); echo "db-ok", PHP_EOL;'
+
+# La inspeccion no debe mostrar ningun puerto publicado para db
+docker inspect owasp-db-2025 --format '{{json .NetworkSettings.Ports}}'
 ```
 
 ## Estructura del Proyecto

@@ -19,6 +19,9 @@ src/a09_actividad/logs/*
 # Docker volumes locales
 mysql/data/
 
+# Local CodeGraph index
+/.codegraph/
+
 # OS
 .DS_Store
 Thumbs.db

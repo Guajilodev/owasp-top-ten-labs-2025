@@ -1,0 +1,6 @@
+[Unit]
+Description=Nexolab web containment slice
+PartOf=nexolab.slice
+
+[Slice]
+MemorySwapMax=0

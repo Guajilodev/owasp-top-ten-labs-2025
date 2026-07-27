@@ -1,0 +1,14 @@
+[Unit]
+Description=Fail-closed Nexolab Compose start gate
+After=docker.service nexolab-firewall.service
+Requires=docker.service nexolab-firewall.service
+StartLimitIntervalSec=0
+OnFailure=nexolab-containment-failure@%n.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nexolab-start
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

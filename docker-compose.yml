@@ -15,7 +15,8 @@ services:
       # En producción: descomentar estos y eliminar el override
       # - "80:80"
       # - "443:443"
-      - "8082:80"
+      - "127.0.0.1:8082:80"
+      - "[::1]:8082:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
@@ -42,11 +43,25 @@ services:
   web:
     build: ./php
     container_name: owasp-web-2025
+    # Compose-enforced containment limits. memswap_limit equal to mem_limit
+    # disables swap-backed growth for this intentionally vulnerable service.
+    mem_limit: 512m
+    memswap_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    read_only: true
     volumes:
-      - ./src:/var/www/html
+      - ./src:/var/www/html:ro
     tmpfs:
+      # Apache, PHP sessions, and the secure-login rate limiter require /tmp.
+      - /tmp:size=64m,mode=1777
+      - /var/run/apache2:size=8m,mode=1777,uid=33,gid=33
+      - /var/lock/apache2:size=8m,mode=1777,uid=33,gid=33
+      - /var/log/apache2:size=16m,mode=1777,uid=33,gid=33
       - /var/www/html/a02_admin/uploads:size=50m,mode=1777
-      - /var/log/nexo:size=20m
+      # A09 deliberately exposes its log, but it must not be host-backed.
+      - /var/www/html/a09_actividad/logs:size=20m,mode=1777
+      - /var/log/nexo:size=20m,mode=0775,uid=33,gid=33
     environment:
       - NEXO_DB_HOST=db
       - NEXO_DB_NAME=${NEXO_DB_NAME}
@@ -59,6 +74,12 @@ services:
     depends_on:
       - db
     restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
     # SIN ports expuestos - solo accesible via nginx
     # 
     # HARDENING: Limitar capabilities del contenedor
@@ -76,10 +97,31 @@ services:
   db:
     image: mariadb:10.11
     container_name: owasp-db-2025
+    # Bound database work that a compromised web service can induce while
+    # leaving enough headroom for MariaDB's 128 MiB InnoDB buffer pool.
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1.0
+    pids_limit: 256
+    read_only: true
     volumes:
       - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - ./mysql/my.cnf:/etc/mysql/conf.d/my.cnf:ro
+      # The named volume keeps database data across container recreation.
       - nexo_db:/var/lib/mysql
+    tmpfs:
+      # Slow-query logs are disposable and bounded; database data stays on
+      # the named volume above.
+      - /var/log/mysql:size=32m,mode=2750,uid=999,gid=4
+      - /tmp:size=32m,mode=1777
+      - /run/mysqld:size=16m,mode=1777
+    logging:
+      # Bound Docker-managed stdout/stderr logs to avoid host disk exhaustion.
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
     environment:
       - MYSQL_ROOT_PASSWORD=${NEXO_DB_ROOT_PASS}
       - MYSQL_DATABASE=${NEXO_DB_NAME}
@@ -118,9 +160,17 @@ networks:
   frontend:
     driver: bridge
     internal: true    # nginx <-> web, aislado
+    driver_opts:
+      # Stable host interface for the local containment policy; Docker still
+      # allocates the subnet and container addresses dynamically.
+      com.docker.network.bridge.name: owasp2025-fe
   backend:
     driver: bridge
     internal: true    # web <-> db, aislado
+    driver_opts:
+      # Stable host interface for the local containment policy; Docker still
+      # allocates the subnet and container addresses dynamically.
+      com.docker.network.bridge.name: owasp2025-be
 
 volumes:
   nexo_db:

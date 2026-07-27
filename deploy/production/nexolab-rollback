@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# Restore a checksum-verified Nexolab snapshot, including its database.
+
+set -euo pipefail
+
+readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:-/opt/owasp2025}"
+readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
+readonly SNAPSHOT_DB="owasp_nexo_db_2025.sql.gz"
+readonly SECRETS_FILE="${NEXOLAB_SECRETS_FILE:-/etc/nexolab/secrets.env}"
+readonly FIREWALL_BIN="${NEXOLAB_FIREWALL_BIN:-/usr/local/sbin/nexolab-firewall}"
+readonly STORAGE_BIN="${NEXOLAB_STORAGE_BIN:-/usr/local/sbin/nexolab-storage}"
+readonly RUNTIME_VERIFY_BIN="${NEXOLAB_RUNTIME_VERIFY_BIN:-/usr/local/sbin/nexolab-runtime-verify}"
+readonly RESET_BIN="${NEXOLAB_RESET_BIN:-/usr/local/sbin/nexolab-reset}"
+
+report_failure() {
+  if [ -x /usr/local/sbin/nexolab-report-failure ]; then
+    /usr/local/sbin/nexolab-report-failure rollback "$*" || true
+  fi
+}
+fail() { report_failure "$*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+require_root() { [ "${EUID}" -eq 0 ] || fail 'Rollback must run as root.'; }
+
+load_env() {
+  local line key value mode
+  if ! { [ -f "$SECRETS_FILE" ] && [ ! -L "$SECRETS_FILE" ]; }; then
+    fail "Secrets file is missing or unsafe: $SECRETS_FILE"
+  fi
+  [ "$(stat -c '%u' "$SECRETS_FILE")" = 0 ] || fail 'Secrets file must be owned by root.'
+  mode="$(stat -c '%a' "$SECRETS_FILE")"
+  (( (8#$mode & 0077) == 0 )) || fail 'Secrets file must not be readable or writable by group/other.'
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; NEXO_DB_NAME=*|NEXO_DB_ROOT_PASS=*) key="${line%%=*}"; value="${line#*=}"; export "$key=$value" ;; *) fail 'Secrets file contains an unsupported or malformed entry.' ;; esac
+  done <"$SECRETS_FILE"
+  [[ "${NEXO_DB_NAME:-}" =~ ^[A-Za-z0-9_]+$ ]] || fail 'Invalid NEXO_DB_NAME.'
+  [ -n "${NEXO_DB_ROOT_PASS:-}" ] || fail 'NEXO_DB_ROOT_PASS is required.'
+}
+
+check() {
+  [ -d "$BACKUP_DIR" ] || fail "Snapshot directory does not exist: $BACKUP_DIR"
+  [ -s "${BACKUP_DIR}/SHA256SUMS" ] || fail 'Snapshot checksum manifest is missing.'
+  (
+    cd "$BACKUP_DIR"
+    sha256sum --check --status SHA256SUMS
+  ) || fail 'Snapshot checksums do not match.'
+  for file in \
+    project/docker-compose.yml project/docker-compose.prod.yml project/mysql/init.sql project/mysql/my.cnf \
+    project/release.tar.gz project/release-revision project/web-image.tar project/web-image-id \
+    host/nexolab.guajilodev.com host/nexolab-reset host/nexolab-firewall \
+     host/nexolab-storage host/nexolab-runtime-verify host/nexolab-firewall.service \
+     host/nexolab-start host/nexolab-start.service host/nexolab-report-failure host/nexolab-containment-failure@.service \
+    host/nexolab-reset.cron host/nexolab-reset.logrotate host/nexolab.slice \
+    host/nexolab-web.slice host/nexolab-db.slice host/nexolab-storage.env host/nexolab-db-storage.conf \
+    host/nexolab-containment.logrotate; do
+    test -r "${BACKUP_DIR}/${file}" || fail "Snapshot is missing ${file}."
+  done
+  test -s "${BACKUP_DIR}/${SNAPSHOT_DB}" || fail 'Snapshot database archive is missing.'
+  gzip -t "${BACKUP_DIR}/${SNAPSHOT_DB}" || fail 'Snapshot database archive is corrupt.'
+  printf 'Rollback snapshot is verified: %s\n' "$BACKUP_DIR"
+}
+
+install_snapshot_files() {
+  install -d -m 0755 "$PROJECT_DIR/mysql" /etc/nginx/sites-available /etc/systemd/system /etc/cron.d /etc/logrotate.d /usr/local/sbin
+  restore_release
+  cp -a "$BACKUP_DIR/host/nexolab.guajilodev.com" /etc/nginx/sites-available/nexolab.guajilodev.com
+  cp -a "$BACKUP_DIR/host/nexolab-reset" /usr/local/sbin/nexolab-reset
+  cp -a "$BACKUP_DIR/host/nexolab-firewall" /usr/local/sbin/nexolab-firewall
+  cp -a "$BACKUP_DIR/host/nexolab-storage" /usr/local/sbin/nexolab-storage
+  cp -a "$BACKUP_DIR/host/nexolab-runtime-verify" /usr/local/sbin/nexolab-runtime-verify
+  cp -a "$BACKUP_DIR/host/nexolab-start" /usr/local/sbin/nexolab-start
+  cp -a "$BACKUP_DIR/host/nexolab-report-failure" /usr/local/sbin/nexolab-report-failure
+  cp -a "$BACKUP_DIR/host/nexolab-firewall.service" /etc/systemd/system/nexolab-firewall.service
+  cp -a "$BACKUP_DIR/host/nexolab-start.service" /etc/systemd/system/nexolab-start.service
+  cp -a "$BACKUP_DIR/host/nexolab-containment-failure@.service" /etc/systemd/system/nexolab-containment-failure@.service
+  cp -a "$BACKUP_DIR/host/nexolab-reset.cron" /etc/cron.d/nexolab-reset
+  cp -a "$BACKUP_DIR/host/nexolab-reset.logrotate" /etc/logrotate.d/nexolab-reset
+  cp -a "$BACKUP_DIR/host/nexolab-containment.logrotate" /etc/logrotate.d/nexolab-containment
+  cp -a "$BACKUP_DIR/host/nexolab.slice" /etc/systemd/system/nexolab.slice
+  cp -a "$BACKUP_DIR/host/nexolab-web.slice" /etc/systemd/system/nexolab-web.slice
+  cp -a "$BACKUP_DIR/host/nexolab-db.slice" /etc/systemd/system/nexolab-db.slice
+  install -d -m 0750 /etc/nexolab /etc/systemd/system/nexolab-db.slice.d
+  cp -a "$BACKUP_DIR/host/nexolab-storage.env" /etc/nexolab/storage.env
+  cp -a "$BACKUP_DIR/host/nexolab-db-storage.conf" /etc/systemd/system/nexolab-db.slice.d/storage.conf
+  chmod 0750 /usr/local/sbin/nexolab-reset /usr/local/sbin/nexolab-firewall /usr/local/sbin/nexolab-storage /usr/local/sbin/nexolab-runtime-verify /usr/local/sbin/nexolab-start /usr/local/sbin/nexolab-report-failure
+  chmod 0644 /etc/cron.d/nexolab-reset /etc/logrotate.d/nexolab-reset /etc/logrotate.d/nexolab-containment
+}
+
+rebind_containment() {
+  # Compose may create a bridge while materializing a stopped container. Bind
+  # and verify synchronously before any container is allowed to start on it.
+  "$FIREWALL_BIN" apply
+  "$FIREWALL_BIN" verify
+}
+
+stop_and_confirm() {
+  local service="$1" container="$2" cleanup_failed=false
+  if ! docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" stop "$service"; then
+    printf 'ERROR: Compose could not stop %s during rollback containment; attempting direct Docker stop.\n' "$service" >&2
+    if ! docker stop --time 10 "$container"; then
+      printf 'ERROR: Direct Docker stop failed for %s during rollback containment.\n' "$service" >&2
+      cleanup_failed=true
+    fi
+  fi
+  local state
+  if ! state="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" || [ "$state" != false ]; then
+    printf 'ERROR: %s could not be confirmed stopped after failed rollback containment.\n' "$service" >&2
+    cleanup_failed=true
+  fi
+  [ "$cleanup_failed" = false ]
+}
+
+contain_failed_rollback() {
+  local cleanup_failed=false
+  stop_and_confirm web "$WEB_CONTAINER" || cleanup_failed=true
+  stop_and_confirm db "$DB_CONTAINER" || cleanup_failed=true
+  [ "$cleanup_failed" = false ]
+}
+
+restore_release() {
+  local stage old path image_id image_tag
+  stage="$(mktemp -d "${PROJECT_DIR}/.nexolab-rollback-stage.XXXXXX")"
+  old="$(mktemp -d "${PROJECT_DIR}/.nexolab-rollback-old.XXXXXX")"
+  tar -xzf "$BACKUP_DIR/project/release.tar.gz" -C "$stage"
+  for path in docker-compose.yml docker-compose.prod.yml php src mysql; do
+    [ -e "$stage/$path" ] || fail "Release archive is missing $path."
+  done
+  # Move whole release paths rather than overlaying them, so attacker-created
+  # source files cannot survive a rollback. The previous paths remain available
+  # until every restored path has been installed.
+  for path in docker-compose.yml docker-compose.prod.yml php src mysql; do
+    [ ! -e "$PROJECT_DIR/$path" ] || mv "$PROJECT_DIR/$path" "$old/$path"
+    mv "$stage/$path" "$PROJECT_DIR/$path"
+  done
+  image_id="$(<"$BACKUP_DIR/project/web-image-id")"
+  [[ "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'Snapshot web image digest is invalid.'
+  docker load -i "$BACKUP_DIR/project/web-image.tar" >/dev/null
+  docker image inspect "$image_id" >/dev/null || fail 'Snapshot web image did not load with its recorded digest.'
+  image_tag="owasp2025-web:rollback-$(sha256sum "$BACKUP_DIR/project/web-image.tar" | cut -c1-12)"
+  docker tag "$image_id" "$image_tag"
+  readonly ROLLBACK_WEB_IMAGE="$image_tag"
+  rm -rf "$stage" "$old"
+}
+
+wait_for_database() {
+  local _
+  for _ in $(seq 1 24); do
+    if docker exec -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" "$DB_CONTAINER" \
+      mariadb-admin --protocol=socket -uroot ping --silent >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 5
+  done
+  fail 'Timed out waiting for MariaDB during rollback.'
+}
+
+restore_database() {
+  docker exec -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" "$DB_CONTAINER" \
+    mariadb --protocol=socket -uroot -e "DROP DATABASE IF EXISTS \`${NEXO_DB_NAME}\`;"
+  gzip -cd "${BACKUP_DIR}/${SNAPSHOT_DB}" | docker exec -i -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" \
+    "$DB_CONTAINER" mariadb --protocol=socket -uroot
+  docker exec -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" "$DB_CONTAINER" \
+    mariadb --protocol=socket -uroot "$NEXO_DB_NAME" -Nse 'SELECT 1' | grep -qx 1 || \
+    fail 'Database archive was not restored into a usable database.'
+}
+
+rollback() {
+  local rollback_complete=false
+  require_root
+  check
+  # Refuse to begin unless containment already exists. Do not disable, remove,
+  # or stop it: every failure path must retain the old restrictive generation.
+  "$FIREWALL_BIN" verify
+  leave_web_stopped_on_failure() {
+    local status="$?"
+    trap - EXIT
+    if [ "$rollback_complete" != true ]; then
+      # A rollback runtime or recovery failure is fail-closed. Do not attempt a
+      # best-effort restart: only an explicitly successful future start gate may
+      # expose web again.
+      if ! contain_failed_rollback; then
+        report_failure 'rollback failed and containment could not confirm both web and DB are stopped'
+        exit 1
+      fi
+      report_failure 'rollback failed; web and DB were synchronously left stopped pending a successful containment/runtime gate'
+    fi
+    exit "$status"
+  }
+  trap leave_web_stopped_on_failure EXIT
+  bash -n "$BACKUP_DIR/host/nexolab-firewall"
+  install_snapshot_files
+  systemctl daemon-reload
+  nginx -t
+  load_env
+  "$STORAGE_BIN" verify
+  # Do not run `compose down`: it destroys dynamic bridges and creates an
+  # asynchronous uncontained interval. Materialize stopped containers, bind
+  # rules to their current bridge, verify, then start each workload.
+  NEXOLAB_WEB_IMAGE="$ROLLBACK_WEB_IMAGE" docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" up --no-start --no-build db
+  rebind_containment
+  NEXOLAB_WEB_IMAGE="$ROLLBACK_WEB_IMAGE" docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" start db
+  wait_for_database
+  restore_database
+  NEXOLAB_WEB_IMAGE="$ROLLBACK_WEB_IMAGE" docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" up --no-start --no-build --force-recreate --no-deps web
+  rebind_containment
+  NEXOLAB_WEB_IMAGE="$ROLLBACK_WEB_IMAGE" docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" start web
+  systemctl reload nginx
+  "$RESET_BIN" verify
+  "$RUNTIME_VERIFY_BIN"
+  rollback_complete=true
+  printf 'Rollback applied from verified snapshot %s\n' "$BACKUP_DIR"
+}
+
+[ "$#" -eq 2 ] || { printf 'Usage: %s <snapshot-directory> {check|rollback}\n' "$0" >&2; exit 2; }
+readonly BACKUP_DIR="$1"
+case "$2" in
+  check) check ;;
+  rollback) rollback ;;
+  *) printf 'Usage: %s <snapshot-directory> {check|rollback}\n' "$0" >&2; exit 2 ;;
+esac

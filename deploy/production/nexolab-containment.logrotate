@@ -1,0 +1,10 @@
+/var/log/nexolab-containment-failures.log {
+    daily
+    rotate 14
+    maxsize 1M
+    compress
+    missingok
+    notifempty
+    su root adm
+    create 0640 root adm
+}

@@ -1,0 +1,10 @@
+/var/log/nexolab-reset.log {
+    daily
+    rotate 7
+    maxsize 1M
+    compress
+    missingok
+    notifempty
+    su root adm
+    create 0640 root adm
+}

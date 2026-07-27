@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Create a self-verifying rollback snapshot before an approved production change.
+
+set -euo pipefail
+
+readonly PROJECT_DIR="/opt/owasp2025"
+readonly DB_CONTAINER="owasp-db-2025"
+readonly DB_ARCHIVE="owasp_nexo_db_2025.sql.gz"
+readonly SECRETS_FILE="${NEXOLAB_SECRETS_FILE:-/etc/nexolab/secrets.env}"
+
+report_failure() {
+  if [ -x /usr/local/sbin/nexolab-report-failure ]; then
+    /usr/local/sbin/nexolab-report-failure backup "$*" || true
+  fi
+}
+fail() { report_failure "$*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+require_root() { [ "${EUID}" -eq 0 ] || fail 'Backup must run as root.'; }
+
+load_env() {
+  local line key value mode
+  if ! { [ -f "$SECRETS_FILE" ] && [ ! -L "$SECRETS_FILE" ]; }; then
+    fail "Secrets file is missing or unsafe: $SECRETS_FILE"
+  fi
+  [ "$(stat -c '%u' "$SECRETS_FILE")" = 0 ] || fail 'Secrets file must be owned by root.'
+  mode="$(stat -c '%a' "$SECRETS_FILE")"
+  (( (8#$mode & 0077) == 0 )) || fail 'Secrets file must not be readable or writable by group/other.'
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; NEXO_DB_NAME=*|NEXO_DB_ROOT_PASS=*) key="${line%%=*}"; value="${line#*=}"; export "$key=$value" ;; *) fail 'Secrets file contains an unsupported or malformed entry.' ;; esac
+  done <"$SECRETS_FILE"
+  [[ "${NEXO_DB_NAME:-}" =~ ^[A-Za-z0-9_]+$ ]] || fail 'Invalid NEXO_DB_NAME.'
+  [ -n "${NEXO_DB_ROOT_PASS:-}" ] || fail 'NEXO_DB_ROOT_PASS is required.'
+}
+
+copy_required() {
+  local source="$1" destination="$2"
+  [ -r "$source" ] || fail "Required rollback artifact is missing: $source"
+  install -D -m 0644 "$source" "$destination"
+}
+
+create() {
+  [ "$#" -eq 1 ] || fail "Usage: $0 create <new-snapshot-directory>"
+  require_root
+  load_env
+  local destination="$1" parent staging manifest
+  parent="$(dirname "$destination")"
+  [ -d "$parent" ] || fail "Snapshot parent directory does not exist: $parent"
+  [ ! -e "$destination" ] || fail "Snapshot destination already exists: $destination"
+  staging="$(mktemp -d "${parent}/.$(basename "$destination").tmp.XXXXXX")"
+  trap 'rm -rf "$staging"' EXIT
+  install -d -m 0700 "$staging/project" "$staging/host"
+
+  docker exec -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" "$DB_CONTAINER" \
+    mariadb-dump --protocol=socket -uroot --single-transaction --routines --events --databases "$NEXO_DB_NAME" | gzip -9 >"${staging}/${DB_ARCHIVE}"
+  gzip -t "${staging}/${DB_ARCHIVE}"
+
+  web_image_id="$(docker inspect --format '{{.Image}}' owasp-web-2025)"
+  [[ "$web_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'Could not determine the running web image digest.'
+  docker image save "$web_image_id" -o "$staging/project/web-image.tar"
+  printf '%s\n' "$web_image_id" >"$staging/project/web-image-id"
+  git -C "$PROJECT_DIR" rev-parse HEAD >"$staging/project/release-revision" 2>/dev/null || printf 'non-git-release\n' >"$staging/project/release-revision"
+  tar -C "$PROJECT_DIR" --create --gzip --file "$staging/project/release.tar.gz" \
+    --exclude=.env --exclude=.git --exclude=.codegraph --exclude=mysql/data \
+    docker-compose.yml docker-compose.prod.yml php src mysql
+
+  copy_required "$PROJECT_DIR/docker-compose.yml" "$staging/project/docker-compose.yml"
+  copy_required "$PROJECT_DIR/docker-compose.prod.yml" "$staging/project/docker-compose.prod.yml"
+  copy_required "$PROJECT_DIR/mysql/init.sql" "$staging/project/mysql/init.sql"
+  copy_required "$PROJECT_DIR/mysql/my.cnf" "$staging/project/mysql/my.cnf"
+  copy_required /etc/nginx/sites-available/nexolab.guajilodev.com "$staging/host/nexolab.guajilodev.com"
+  copy_required /usr/local/sbin/nexolab-reset "$staging/host/nexolab-reset"
+  copy_required /usr/local/sbin/nexolab-firewall "$staging/host/nexolab-firewall"
+  copy_required /usr/local/sbin/nexolab-storage "$staging/host/nexolab-storage"
+  copy_required /usr/local/sbin/nexolab-runtime-verify "$staging/host/nexolab-runtime-verify"
+  copy_required /usr/local/sbin/nexolab-start "$staging/host/nexolab-start"
+  copy_required /usr/local/sbin/nexolab-report-failure "$staging/host/nexolab-report-failure"
+  copy_required /etc/systemd/system/nexolab-firewall.service "$staging/host/nexolab-firewall.service"
+  copy_required /etc/systemd/system/nexolab-start.service "$staging/host/nexolab-start.service"
+  copy_required /etc/systemd/system/nexolab-containment-failure@.service "$staging/host/nexolab-containment-failure@.service"
+  copy_required /etc/cron.d/nexolab-reset "$staging/host/nexolab-reset.cron"
+  copy_required /etc/logrotate.d/nexolab-reset "$staging/host/nexolab-reset.logrotate"
+  copy_required /etc/logrotate.d/nexolab-containment "$staging/host/nexolab-containment.logrotate"
+  copy_required /etc/systemd/system/nexolab.slice "$staging/host/nexolab.slice"
+  copy_required /etc/systemd/system/nexolab-web.slice "$staging/host/nexolab-web.slice"
+  copy_required /etc/systemd/system/nexolab-db.slice "$staging/host/nexolab-db.slice"
+  copy_required /etc/nexolab/storage.env "$staging/host/nexolab-storage.env"
+  copy_required /etc/systemd/system/nexolab-db.slice.d/storage.conf "$staging/host/nexolab-db-storage.conf"
+
+  (
+    cd "$staging"
+    manifest="$(mktemp "${staging}/.manifest.XXXXXX")"
+    find . -type f ! -name SHA256SUMS ! -name "${manifest##*/}" -print0 | sort -z | xargs -0 sha256sum >"$manifest"
+    mv "$manifest" SHA256SUMS
+  )
+  mv "$staging" "$destination"
+  trap - EXIT
+  printf 'Created verified rollback snapshot: %s\n' "$destination"
+}
+
+case "${1:-}" in
+  create) shift; create "$@" ;;
+  *) printf 'Usage: %s create <new-snapshot-directory>\n' "$0" >&2; exit 2 ;;
+esac

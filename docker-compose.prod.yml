@@ -1,0 +1,136 @@
+name: owasp2025
+
+# Production topology: host nginx -> 127.0.0.1:8082 -> web -> db.
+# No containerized reverse proxy or public Docker bridge is part of this file.
+services:
+  web:
+    build: ./php
+    # Rollback injects a snapshot-specific tag here after loading the saved image.
+    image: ${NEXOLAB_WEB_IMAGE:-owasp2025-web:latest}
+    container_name: owasp-web-2025
+    ports:
+      - "127.0.0.1:8082:80"
+    mem_limit: 512m
+    memswap_limit: 512m
+    # The effective no-swap control is inherited from nexolab-web.slice.
+    # memswap_limit remains a Docker-level defense in depth setting.
+    cgroup_parent: nexolab-web.slice
+    cpus: 1.0
+    pids_limit: 256
+    read_only: true
+    init: true
+    volumes:
+      - ./src:/var/www/html:ro
+    tmpfs:
+      - /tmp:size=64m,mode=1777,noexec,nosuid
+      - /var/run/apache2:size=8m,mode=1777,noexec,nosuid
+      - /var/lock/apache2:size=8m,mode=1777,noexec,nosuid
+      - /var/log/apache2:size=16m,mode=1777,noexec,nosuid
+      - /var/log/nexo:size=20m,mode=1777,noexec,nosuid
+      - /var/www/html/a02_admin/uploads:size=50m,mode=1777,noexec,nosuid
+      - /var/www/html/a09_actividad/logs:size=20m,mode=1777,noexec,nosuid
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    environment:
+      NEXO_DB_HOST: db
+      NEXO_DB_NAME: ${NEXO_DB_NAME}
+      NEXO_DB_USER: ${NEXO_DB_USER}
+      NEXO_DB_PASS: ${NEXO_DB_PASS}
+      NEXO_ENV: ${NEXO_ENV:-production}
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      db:
+        condition: service_healthy
+    # Do not let Docker auto-start this vulnerable workload at daemon boot.
+    # nexolab-start.service is the only boot start gate: it creates stopped
+    # containers, binds containment, verifies it, and only then starts them.
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+
+  db:
+    image: mariadb:10.11
+    container_name: owasp-db-2025
+    mem_limit: 768m
+    memswap_limit: 768m
+    # The database gets its own systemd slice so the host can enforce both
+    # swap=0 and bounded block I/O independently from the web service.
+    cgroup_parent: nexolab-db.slice
+    cpus: 1.0
+    pids_limit: 256
+    read_only: true
+    init: true
+    volumes:
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./mysql/my.cnf:/etc/mysql/conf.d/my.cnf:ro
+      - nexo_db:/var/lib/mysql
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid
+      - /run/mysqld:size=16m,mode=1777,noexec,nosuid
+      - /var/log/mysql:size=32m,mode=1777,noexec,nosuid
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+        compress: "true"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${NEXO_DB_ROOT_PASS}
+      MYSQL_DATABASE: ${NEXO_DB_NAME}
+      MYSQL_USER: ${NEXO_DB_USER}
+      MYSQL_PASSWORD: ${NEXO_DB_PASS}
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping --protocol=socket -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - backend
+    # See web: Docker restart policies would run before the host start gate.
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+
+networks:
+  frontend:
+    driver: bridge
+    # Keep web on internal networks only. With Docker Engine >= 26, embedded
+    # DNS therefore serves service names but does not forward external lookups.
+    # The loopback-published port remains reachable by host nginx.
+    internal: true
+  backend:
+    driver: bridge
+    internal: true
+
+volumes:
+  nexo_db:
+    name: owasp_nexo_db_2025
+    driver: local
+    driver_opts:
+      # Provision this as a small, dedicated host filesystem with
+      # deploy/production/nexolab-storage before starting production.
+      # A bind mount keeps MariaDB data off the host root filesystem.
+      type: none
+      o: bind
+      device: ${NEXOLAB_DB_STORAGE_PATH:?Set NEXOLAB_DB_STORAGE_PATH to the dedicated bounded database mount}

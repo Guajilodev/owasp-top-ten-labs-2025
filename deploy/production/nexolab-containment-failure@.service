@@ -1,0 +1,6 @@
+[Unit]
+Description=Persist Nexolab containment failure for %i
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/nexolab-report-failure systemd-%i "Inspect: systemctl status %i; journalctl -u %i --since -1h"

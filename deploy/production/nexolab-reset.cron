@@ -1,0 +1,10 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+# Reset only the active Nexo services and their bounded writable lab paths.
+# The reset script reads root-owned /etc/nexolab/secrets.env without evaluating
+# it as shell code; cron never sources the mutable project .env.
+0 */4 * * * root /usr/local/sbin/nexolab-reset reset >> /var/log/nexolab-reset.log 2>&1 || /usr/local/sbin/nexolab-report-failure reset-cron "reset failed; inspect /var/log/nexolab-reset.log"
+
+# Host nginx owns TLS and reloads after certificate renewal.
+0 3 * * 1 root certbot renew --quiet && systemctl reload nginx >> /var/log/nexolab-reset.log 2>&1 || /usr/local/sbin/nexolab-report-failure certbot-cron "certificate renewal or nginx reload failed"

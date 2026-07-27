@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# Interface-based containment for the owasp2025 Compose project.
+# It discovers Docker bridge names at runtime and never matches container CIDRs.
+# `watch` reapplies the policy after every project network/container event.
+
+set -euo pipefail
+
+readonly PROJECT="owasp2025"
+readonly TAG="nexolab-containment"
+readonly MIN_DOCKER_MAJOR=28
+readonly STATE_DIR="${NEXOLAB_FIREWALL_STATE_DIR:-/run/nexolab-firewall}"
+
+report_failure() {
+  if [ -x /usr/local/sbin/nexolab-report-failure ]; then
+    /usr/local/sbin/nexolab-report-failure firewall "$*" || true
+  fi
+}
+fail() { report_failure "$*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+ipt() { "$1" -w "${@:2}"; }
+
+require_safe_docker() {
+  local major
+  major="$(docker version --format '{{.Server.Version}}' | cut -d. -f1)"
+  [[ "$major" =~ ^[0-9]+$ && "$major" -ge "$MIN_DOCKER_MAJOR" ]] || \
+    fail "Docker Engine ${MIN_DOCKER_MAJOR}+ is required for safe loopback publishing."
+}
+
+network_id() {
+  local role="$1" id
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if [ "$(docker network inspect "$id" --format '{{ index .Labels "com.docker.compose.network" }}')" = "$role" ]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+  done < <(docker network ls -q --filter "label=com.docker.compose.project=${PROJECT}")
+  printf 'Network %s is not available for Compose project %s.\n' "$role" "$PROJECT" >&2
+  return 1
+}
+
+bridge_for_network() {
+  local id="$1" bridge
+  bridge="$(docker network inspect "$id" --format '{{ index .Options "com.docker.network.bridge.name" }}')"
+  if [ -z "$bridge" ]; then
+    bridge="br-${id:0:12}"
+  fi
+  ip link show dev "$bridge" >/dev/null 2>&1 || {
+    printf 'Docker bridge %s does not exist.\n' "$bridge" >&2
+    return 1
+  }
+  printf '%s\n' "$bridge"
+}
+
+discover_bridges() {
+  FRONTEND_BRIDGE="$(bridge_for_network "$(network_id frontend)")"
+  BACKEND_BRIDGE="$(bridge_for_network "$(network_id backend)")"
+}
+
+firewall_binaries() {
+  command -v iptables >/dev/null || fail 'iptables is required.'
+  printf '%s\n' iptables
+  if command -v ip6tables >/dev/null && ip6tables -w -S DOCKER-USER >/dev/null 2>&1; then
+    printf '%s\n' ip6tables
+  fi
+}
+
+apply() {
+  require_safe_docker
+  discover_bridges || fail 'The Compose networks are not ready; start db and web before applying containment.'
+  apply_discovered
+}
+
+new_chain_name() {
+  local role="$1"
+  printf 'NEXO-%s-%s-%s\n' "$role" "$$" "$RANDOM"
+}
+
+create_input_chain() {
+  local bin="$1" chain="$2"
+  ipt "$bin" -N "$chain"
+  ipt "$bin" -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  ipt "$bin" -A "$chain" -i "$FRONTEND_BRIDGE" -j DROP
+  ipt "$bin" -A "$chain" -i "$BACKEND_BRIDGE" -j DROP
+  ipt "$bin" -A "$chain" -j RETURN
+}
+
+create_forward_chain() {
+  local bin="$1" chain="$2"
+  ipt "$bin" -N "$chain"
+  ipt "$bin" -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  # The explicit output-interface drops defend direct publishing even if a
+  # Docker regression reintroduces the pre-28 loopback L2 exposure.
+  ipt "$bin" -A "$chain" -i lo -o "$FRONTEND_BRIDGE" -p tcp --dport 80 -m conntrack --ctstate NEW -j ACCEPT
+  ipt "$bin" -A "$chain" -i "$FRONTEND_BRIDGE" -o "$BACKEND_BRIDGE" -p tcp --dport 3306 -m conntrack --ctstate NEW -j ACCEPT
+  ipt "$bin" -A "$chain" -i "$FRONTEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
+  ipt "$bin" -A "$chain" -i "$BACKEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
+  ipt "$bin" -A "$chain" -o "$FRONTEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
+  ipt "$bin" -A "$chain" -o "$BACKEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
+  ipt "$bin" -A "$chain" -j RETURN
+}
+
+delete_jump_and_chain() {
+  local bin="$1" parent="$2" chain="$3"
+  [ -n "$chain" ] || return 0
+  while ipt "$bin" -C "$parent" -m comment --comment "$TAG" -j "$chain" >/dev/null 2>&1; do
+    ipt "$bin" -D "$parent" -m comment --comment "$TAG" -j "$chain"
+  done
+  ipt "$bin" -F "$chain" 2>/dev/null || true
+  ipt "$bin" -X "$chain" 2>/dev/null || true
+}
+
+state_file() { printf '%s/%s\n' "$STATE_DIR" "$1"; }
+
+read_state() {
+  local bin="$1" file input forward
+  file="$(state_file "$bin")"
+  [ -r "$file" ] || return 0
+  IFS=' ' read -r input forward <"$file" || true
+  printf '%s %s\n' "${input:-}" "${forward:-}"
+}
+
+write_state() {
+  local bin="$1" input="$2" forward="$3" file temp
+  install -d -m 0700 "$STATE_DIR"
+  file="$(state_file "$bin")"
+  temp="${file}.tmp.$$"
+  printf '%s %s\n' "$input" "$forward" >"$temp"
+  chmod 0600 "$temp"
+  mv -f "$temp" "$file"
+}
+
+apply_discovered() {
+  local bin old_input old_forward new_input new_forward state
+  while IFS= read -r bin; do
+    ipt "$bin" -S DOCKER-USER >/dev/null 2>&1 || fail "${bin} DOCKER-USER chain is unavailable."
+    state="$(read_state "$bin" || true)"
+    old_input="${state%% *}"
+    old_forward="${state#* }"
+    [ "$old_input" = "$state" ] && old_forward=""
+    new_input="$(new_chain_name INPUT)"
+    new_forward="$(new_chain_name FWD)"
+    # Build complete replacement chains before they can receive a packet.
+    create_input_chain "$bin" "$new_input"
+    create_forward_chain "$bin" "$new_forward"
+    # Install the new jumps first. A failure leaves the previously active,
+    # restrictive chains in place; only then retire the recorded generation.
+    ipt "$bin" -I INPUT 1 -m comment --comment "$TAG" -j "$new_input"
+    ipt "$bin" -I DOCKER-USER 1 -m comment --comment "$TAG" -j "$new_forward"
+    ipt "$bin" -C INPUT -m comment --comment "$TAG" -j "$new_input"
+    ipt "$bin" -C DOCKER-USER -m comment --comment "$TAG" -j "$new_forward"
+    write_state "$bin" "$new_input" "$new_forward"
+    delete_jump_and_chain "$bin" INPUT "$old_input"
+    delete_jump_and_chain "$bin" DOCKER-USER "$old_forward"
+  done < <(firewall_binaries)
+  printf 'Applied containment: frontend=%s backend=%s\n' "$FRONTEND_BRIDGE" "$BACKEND_BRIDGE"
+}
+
+remove() {
+  local bin state input forward
+  while IFS= read -r bin; do
+    state="$(read_state "$bin" || true)"
+    input="${state%% *}"; forward="${state#* }"
+    [ "$input" = "$state" ] && forward=""
+    delete_jump_and_chain "$bin" INPUT "$input"
+    delete_jump_and_chain "$bin" DOCKER-USER "$forward"
+    rm -f "$(state_file "$bin")"
+  done < <(firewall_binaries)
+}
+
+verify() {
+  require_safe_docker
+  discover_bridges || fail 'The Compose networks are not ready; cannot verify containment.'
+  local bin
+  while IFS= read -r bin; do
+    state="$(read_state "$bin" || fail "No active containment generation recorded for ${bin}.")"
+    input="${state%% *}"; forward="${state#* }"
+    if [ "$input" = "$state" ] || [ -z "$forward" ]; then
+      fail "Incomplete containment state for ${bin}."
+    fi
+    ipt "$bin" -C INPUT -m comment --comment "$TAG" -j "$input"
+    ipt "$bin" -C DOCKER-USER -m comment --comment "$TAG" -j "$forward"
+    ipt "$bin" -C "$input" -i "$FRONTEND_BRIDGE" -j DROP
+    ipt "$bin" -C "$input" -i "$BACKEND_BRIDGE" -j DROP
+    ipt "$bin" -C "$forward" -i lo -o "$FRONTEND_BRIDGE" -p tcp --dport 80 -m conntrack --ctstate NEW -j ACCEPT
+    ipt "$bin" -C "$forward" -i "$FRONTEND_BRIDGE" -o "$BACKEND_BRIDGE" -p tcp --dport 3306 -m conntrack --ctstate NEW -j ACCEPT
+    ipt "$bin" -C "$forward" -o "$FRONTEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
+    ipt "$bin" -C "$forward" -o "$BACKEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
+  done < <(firewall_binaries)
+  printf 'Containment verification passed: frontend=%s backend=%s\n' "$FRONTEND_BRIDGE" "$BACKEND_BRIDGE"
+}
+
+apply_when_ready() {
+  if discover_bridges; then
+    apply_discovered
+    return 0
+  fi
+  printf 'Containment pending: waiting for both %s Compose bridges.\n' "$PROJECT" >&2
+  return 1
+}
+
+watch() {
+  trap 'exit 0' TERM INT
+  while :; do
+    apply_when_ready || report_failure 'containment remains pending because project bridges are unavailable'
+    # Network recreation and each db/web lifecycle event are labelled by
+    # Compose. Re-running apply flushes only this policy's chains and binds
+    # the rules to the newly discovered interfaces.
+    docker events \
+      --filter "label=com.docker.compose.project=${PROJECT}" \
+      --filter 'type=container' \
+      --filter 'type=network' \
+      --format '{{.Type}} {{.Action}}' | while IFS=' ' read -r event_type event_action; do
+        case "${event_type}:${event_action}" in
+          container:start|container:die|container:destroy|container:create|network:create|network:destroy|network:connect|network:disconnect)
+            apply_when_ready || true
+            ;;
+        esac
+      done || true
+    sleep 2
+  done
+}
+
+case "${1:-}" in
+  apply) apply ;;
+  remove) remove ;;
+  verify) verify ;;
+  watch) watch ;;
+  *) printf 'Usage: %s {apply|remove|verify|watch}\n' "$0" >&2; exit 2 ;;
+esac

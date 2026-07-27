@@ -1,0 +1,361 @@
+#!/usr/bin/env bash
+# Bounded clean-state recovery for the intentionally vulnerable lab.
+
+set -euo pipefail
+
+readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:-/opt/owasp2025}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
+readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
+readonly UPLOAD_DIR="/var/www/html/a02_admin/uploads"
+readonly A09_LOG_DIR="/var/www/html/a09_actividad/logs"
+readonly LOCK_FILE="${NEXOLAB_LOCK_FILE:-/run/nexolab-reset.lock}"
+readonly LOCK_TIMEOUT_SECONDS=30
+readonly RESET_TIMEOUT_SECONDS="${NEXOLAB_RESET_TIMEOUT_SECONDS:-180}"
+readonly COMMAND_TIMEOUT_SECONDS="${NEXOLAB_COMMAND_TIMEOUT_SECONDS:-30}"
+readonly TERM_GRACE_SECONDS="${NEXOLAB_TERM_GRACE_SECONDS:-10}"
+readonly SECRETS_FILE="${NEXOLAB_SECRETS_FILE:-/etc/nexolab/secrets.env}"
+readonly RECOVERY_DIR="${NEXOLAB_RECOVERY_DIR:-/var/lib/nexolab-reset-recovery}"
+
+report_failure() {
+  if [ -x /usr/local/sbin/nexolab-report-failure ]; then
+    /usr/local/sbin/nexolab-report-failure reset "$*" || true
+  fi
+}
+fail() { report_failure "$*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+[[ "$COMMAND_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'NEXOLAB_COMMAND_TIMEOUT_SECONDS must be a positive integer.'
+[[ "$TERM_GRACE_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'NEXOLAB_TERM_GRACE_SECONDS must be a positive integer.'
+[[ "$RESET_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'NEXOLAB_RESET_TIMEOUT_SECONDS must be a positive integer.'
+
+load_env() {
+  local line key value mode
+  if ! { [ -f "$SECRETS_FILE" ] && [ ! -L "$SECRETS_FILE" ]; }; then
+    fail "Secrets file is missing or unsafe: $SECRETS_FILE"
+  fi
+  [ "$(stat -c '%u' "$SECRETS_FILE")" = 0 ] || fail 'Secrets file must be owned by root.'
+  mode="$(stat -c '%a' "$SECRETS_FILE")"
+  (( (8#$mode & 0077) == 0 )) || fail 'Secrets file must not be readable or writable by group/other.'
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+      NEXO_DB_NAME=*|NEXO_DB_USER=*|NEXO_DB_PASS=*|NEXO_DB_ROOT_PASS=*)
+        key="${line%%=*}"; value="${line#*=}"
+        export "$key=$value"
+        ;;
+      *) fail 'Secrets file contains an unsupported or malformed entry.' ;;
+    esac
+  done <"$SECRETS_FILE"
+  [[ "${NEXO_DB_NAME:-}" =~ ^[A-Za-z0-9_]+$ ]] || fail 'NEXO_DB_NAME must contain only letters, numbers, and underscores.'
+  [[ "${NEXO_DB_USER:-}" =~ ^[A-Za-z0-9_]+$ ]] || fail 'NEXO_DB_USER must contain only letters, numbers, and underscores.'
+  [ -n "${NEXO_DB_ROOT_PASS:-}" ] || fail 'NEXO_DB_ROOT_PASS is required for authoritative reset recovery.'
+}
+
+run_bounded() {
+  # TERM gives the Docker client a chance to finish. KILL bounds a client that
+  # ignores TERM; its caller must then take the verified fail-closed path.
+  timeout --foreground --signal=TERM --kill-after="${TERM_GRACE_SECONDS}s" \
+    "${COMMAND_TIMEOUT_SECONDS}s" "$@"
+}
+
+db_root() {
+  run_bounded docker exec -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" "$DB_CONTAINER" \
+    mariadb --protocol=socket -uroot "$@"
+}
+
+database_ready() {
+  db_root -Nse 'SELECT 1' | grep -qx 1
+}
+
+container_running() {
+  run_bounded docker inspect --format '{{.State.Running}}' "$1"
+}
+
+verify() {
+  load_env
+  container_running "$WEB_CONTAINER" | grep -qx true || return 1
+  container_running "$DB_CONTAINER" | grep -qx true || return 1
+  database_ready || return 1
+  run_bounded docker exec -e MYSQL_PWD="$NEXO_DB_PASS" "$DB_CONTAINER" \
+    mariadb --protocol=socket -u"$NEXO_DB_USER" "$NEXO_DB_NAME" -Nse 'SELECT 1' | grep -qx 1 || return 1
+}
+
+kill_application_sessions() {
+  local session_ids id
+  session_ids="$(db_root -Nse "SELECT ID FROM information_schema.PROCESSLIST WHERE USER = '${NEXO_DB_USER}' AND ID <> CONNECTION_ID()")"
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    [[ "$id" =~ ^[1-9][0-9]*$ ]] || fail "Unexpected MariaDB process id: $id"
+    db_root -e "KILL ${id}"
+  done <<<"$session_ids"
+}
+
+verify_seed_state() {
+  local database="$1" expected_tables actual_tables users views routines events triggers
+  expected_tables=$'activity_log\nclients\ninvoices\norders\nplugins\nproducts\ntransfers\nusers\nwallets'
+  actual_tables="$(db_root -Nse "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = '${database}' AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME")"
+  [ "$actual_tables" = "$expected_tables" ] || fail 'Reset did not produce exactly the expected seed tables.'
+  users="$(db_root -Nse "SELECT GROUP_CONCAT(username ORDER BY id SEPARATOR ',') FROM \`${database}\`.users")"
+  [ "$users" = 'admin,alice,bob,carlos,diana' ] || fail 'Reset did not restore the expected seed users.'
+  views="$(db_root -Nse "SELECT COUNT(*) FROM information_schema.VIEWS WHERE TABLE_SCHEMA = '${database}'")"
+  routines="$(db_root -Nse "SELECT COUNT(*) FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = '${database}'")"
+  events="$(db_root -Nse "SELECT COUNT(*) FROM information_schema.EVENTS WHERE EVENT_SCHEMA = '${database}'")"
+  triggers="$(db_root -Nse "SELECT COUNT(*) FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = '${database}'")"
+  if ! { [ "$views" = 0 ] && [ "$routines" = 0 ] && [ "$events" = 0 ] && [ "$triggers" = 0 ]; }; then
+    fail 'Reset seed schema contains unexpected views, routines, events, or triggers.'
+  fi
+}
+
+reset_web_writable_paths() {
+  # Both writable paths are tmpfs mounts. Recreating a *stopped* web container
+  # discards their entire prior contents without opening a web-serving window.
+  run_bounded docker compose -f "${PROJECT_DIR}/docker-compose.prod.yml" \
+    --project-directory "$PROJECT_DIR" up --no-start --no-build --force-recreate --no-deps web || return 1
+  [ "$(container_running "$WEB_CONTAINER")" = false ] || return 1
+  local tmpfs
+  tmpfs="$(run_bounded docker inspect --format '{{json .HostConfig.Tmpfs}}' "$WEB_CONTAINER")" || return 1
+  [[ "$tmpfs" == *"\"${UPLOAD_DIR}\":"* && "$tmpfs" == *"\"${A09_LOG_DIR}\":"* ]]
+}
+
+move_tables() {
+  local source="$1" destination="$2"
+  db_root -e "
+    SET SESSION group_concat_max_len = 1048576;
+    SELECT GROUP_CONCAT(CONCAT('\`${source}\`.\`', REPLACE(TABLE_NAME, '\`', '\`\`'), '\` TO \`${destination}\`.\`', REPLACE(TABLE_NAME, '\`', '\`\`'), '\`') ORDER BY TABLE_NAME SEPARATOR ', ') INTO @moves
+      FROM information_schema.TABLES WHERE TABLE_SCHEMA = '${source}' AND TABLE_TYPE = 'BASE TABLE';
+    SET @rename_sql = IF(@moves IS NULL, NULL, CONCAT('RENAME TABLE ', @moves));
+    PREPARE reset_move FROM @rename_sql; EXECUTE reset_move; DEALLOCATE PREPARE reset_move;"
+}
+
+database_exists() {
+  [ "$(db_root -Nse "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = '$1'")" = 1 ]
+}
+
+create_database() {
+  db_root -e "CREATE DATABASE \`$1\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+}
+
+archive_live_database() {
+  # A failed post-replacement reset may need the old state for operator-led
+  # analysis. Never keep that state in a MariaDB schema: the application can
+  # reach MariaDB, while this root-only host artifact is not mounted in web/DB.
+  [ ! -L "$RECOVERY_DIR" ] || return 1
+  if [ ! -e "$RECOVERY_DIR" ]; then
+    install -d -o root -g root -m 0700 "$RECOVERY_DIR" || return 1
+  fi
+  [ -d "$RECOVERY_DIR" ] && [ ! -L "$RECOVERY_DIR" ] || return 1
+  [ "$(stat -c '%u' "$RECOVERY_DIR")" = 0 ] || return 1
+  local mode
+  mode="$(stat -c '%a' "$RECOVERY_DIR")" || return 1
+  (( (8#$mode & 0077) == 0 )) || return 1
+
+  recovery_archive="$(mktemp "${RECOVERY_DIR}/nexolab-reset-${NEXO_DB_NAME}-${$}-${RANDOM}.sql.gz.XXXXXX")" || return 1
+  if ! chown root:root "$recovery_archive" || ! chmod 0600 "$recovery_archive" || \
+    [ "$(stat -c '%u' "$recovery_archive")" != 0 ] || [ "$(stat -c '%a' "$recovery_archive")" != 600 ]; then
+    rm -f -- "$recovery_archive"
+    recovery_archive=''
+    return 1
+  fi
+  if ! run_bounded docker exec -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" "$DB_CONTAINER" \
+    mariadb-dump --protocol=socket -uroot --routines --events --triggers --single-transaction --databases "$NEXO_DB_NAME" | \
+    run_bounded gzip -9 >"$recovery_archive"; then
+    rm -f -- "$recovery_archive"
+    recovery_archive=''
+    return 1
+  fi
+  if ! run_bounded gzip -t "$recovery_archive"; then
+    rm -f -- "$recovery_archive"
+    recovery_archive=''
+    return 1
+  fi
+}
+
+remove_recovery_archive() {
+  [ -n "$recovery_archive" ] || return 0
+  rm -f -- "$recovery_archive" || return 1
+  [ ! -e "$recovery_archive" ]
+}
+
+replace_with_clean_seed() {
+  # Rebuilding live from an empty schema removes every attacker-created schema
+  # object, not just tables. Seed tables are then moved into the empty schema.
+  db_root -e "DROP DATABASE IF EXISTS \`${NEXO_DB_NAME}\`;" || return 1
+  create_database "$NEXO_DB_NAME" || return 1
+  move_tables "$stage_database" "$NEXO_DB_NAME" || return 1
+}
+
+cleanup_reset_schemas() {
+  db_root -e "DROP DATABASE IF EXISTS \`${stage_database}\`;" || return 1
+  if database_exists "$stage_database"; then
+    return 1
+  fi
+}
+
+stop_web_and_confirm() {
+  local state
+  state="$(container_running "$WEB_CONTAINER")" || return 1
+  [ "$state" = false ] && return 0
+  if ! run_bounded docker stop --time 10 "$WEB_CONTAINER"; then
+    # A Docker client timeout is a failed reset operation, even if the direct
+    # KILL fallback proves containment. The caller must not continue/reset-start.
+    run_bounded docker kill "$WEB_CONTAINER" || return 1
+    state="$(container_running "$WEB_CONTAINER")" || return 1
+    [ "$state" = false ] || return 1
+    return 1
+  fi
+  state="$(container_running "$WEB_CONTAINER")" || return 1
+  [ "$state" = false ]
+}
+
+reset_locked() {
+  local web_should_run=false reset_succeeded=false live_replaced=false stage_database recovery_archive=''
+  load_env
+  database_ready
+
+  stage_database="nexolab_reset_stage_${$}_${RANDOM}"
+  [[ "$stage_database" =~ ^[A-Za-z0-9_]+$ ]] || fail 'Could not create a safe reset staging name.'
+
+  cleanup_reset_failure() {
+    local status="$?"
+    trap - EXIT HUP INT TERM
+    if [ "$reset_succeeded" != true ]; then
+      # A failed reset never reopens the intentionally vulnerable web service.
+      # This includes failures before replacement and Docker command timeouts.
+      if ! stop_web_and_confirm; then
+        report_failure 'reset failed and web could not be confirmed stopped'
+      fi
+      if ! cleanup_reset_schemas; then
+        report_failure 'reset failure could not prove removal of temporary recovery or staging schemas'
+      fi
+      if [ "$live_replaced" = true ]; then
+        printf 'ERROR: reset failed after live schema replacement; web remains stopped pending operator recovery.\n' >&2
+        report_failure "reset failed after live schema replacement; external recovery archive retained at ${recovery_archive:-unavailable}"
+      fi
+      exit "$status"
+    fi
+    exit "$status"
+  }
+  trap cleanup_reset_failure EXIT
+  trap 'exit 1' HUP INT TERM
+
+  # Import and validate a new seed database before disrupting the live schema.
+  # This prevents a malformed seed or import timeout from leaving the lab empty.
+  db_root -e "CREATE DATABASE \`${stage_database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || fail 'Could not create reset staging schema.'
+  run_bounded docker exec -i -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" "$DB_CONTAINER" \
+    mariadb --protocol=socket -uroot "$stage_database" < "${PROJECT_DIR}/mysql/init.sql" || fail 'Could not import the reset seed into the staging schema.'
+  verify_seed_state "$stage_database"
+
+  if [ "$(container_running "$WEB_CONTAINER")" = true ]; then
+    web_should_run=true
+  fi
+
+  if [ "$(container_running "$WEB_CONTAINER")" = true ]; then
+    stop_web_and_confirm || fail 'Could not stop and confirm web before reset.'
+  fi
+
+  kill_application_sessions
+  archive_live_database || fail 'Could not create a verified operator-only recovery archive.'
+  # The complete prior state is now recoverable outside MariaDB. Rebuild live
+  # from an empty schema so views, routines, events, triggers, and attacker
+  # tables disappear along with the old database definition.
+  live_replaced=true
+  replace_with_clean_seed || fail 'Could not replace the live schema with the validated reset seed.'
+  verify_seed_state "$NEXO_DB_NAME"
+
+  # Any temporary MariaDB schema is a containment failure until its removal is
+  # proven. The recovery archive is outside MariaDB and root-only.
+  if ! cleanup_reset_schemas; then
+    if ! stop_web_and_confirm; then
+      report_failure 'reset cleanup failed and web could not be confirmed stopped'
+    fi
+    trap - EXIT HUP INT TERM
+    fail 'Reset cleanup could not remove temporary recovery schemas; web remains stopped.'
+  fi
+  # Recreate and validate writable tmpfs paths while web is stopped. No web
+  # process may start before this cleanup gate has passed.
+  if [ "$web_should_run" = true ]; then
+    reset_web_writable_paths || fail 'Could not reset and validate web writable paths while web was stopped.'
+  fi
+  if [ "$web_should_run" = true ]; then
+    run_bounded docker start "$WEB_CONTAINER" >/dev/null
+    if ! verify; then
+      fail 'Web start validation failed after reset; web remains stopped.'
+    fi
+  fi
+  # Delete the operator recovery artifact only after every post-replacement
+  # cleanup, web-start validation, and final reset check succeeded.
+  remove_recovery_archive || fail 'Could not remove the successful-reset recovery archive; web remains stopped.'
+  reset_succeeded=true
+  trap - EXIT HUP INT TERM
+  printf '[%s] clean-state reset complete\n' "$(date -u +%FT%TZ)"
+}
+
+worker_group_exists() {
+  kill -0 -- "-$1" 2>/dev/null
+}
+
+terminate_worker_group() {
+  local worker_pid="$1" deadline
+  kill -TERM -- "-$worker_pid" 2>/dev/null || true
+  deadline=$((SECONDS + TERM_GRACE_SECONDS))
+  while worker_group_exists "$worker_pid"; do
+    (( SECONDS >= deadline )) && break
+    sleep 1
+  done
+  if worker_group_exists "$worker_pid"; then
+    kill -KILL -- "-$worker_pid" 2>/dev/null || return 1
+  fi
+  deadline=$((SECONDS + TERM_GRACE_SECONDS))
+  while worker_group_exists "$worker_pid"; do
+    (( SECONDS >= deadline )) && return 1
+    sleep 1
+  done
+}
+
+reset() {
+  # Run the worker in its own session/process group. On timeout or worker
+  # failure, TERM then KILL the group so an active Docker client cannot outlive
+  # reset and race the parent's verified web-containment path.
+  (
+    flock -w "$LOCK_TIMEOUT_SECONDS" 9 || fail 'Another reset is active; lock wait expired.'
+    local status worker_pid deadline timed_out=false
+    setsid "$0" _reset-locked &
+    worker_pid=$!
+    deadline=$((SECONDS + RESET_TIMEOUT_SECONDS))
+    while kill -0 "$worker_pid" 2>/dev/null; do
+      if (( SECONDS >= deadline )); then
+        timed_out=true
+        break
+      fi
+      sleep 1
+    done
+    if [ "$timed_out" = true ]; then
+      terminate_worker_group "$worker_pid" || report_failure 'reset worker process group did not terminate cleanly'
+      wait "$worker_pid" 2>/dev/null || true
+      status=124
+    elif wait "$worker_pid"; then
+      status=0
+    else
+      status=$?
+    fi
+    if worker_group_exists "$worker_pid"; then
+      terminate_worker_group "$worker_pid" || report_failure 'failed to terminate reset worker process group'
+      [ "$status" -eq 0 ] && status=1
+    fi
+    if [ "$status" -eq 0 ]; then
+      return 0
+    fi
+    if ! stop_web_and_confirm; then
+      report_failure 'reset worker failed and parent could not confirm web stopped'
+    else
+      report_failure 'reset worker failed; parent confirmed web stopped'
+    fi
+    return "$status"
+  ) 9>"$LOCK_FILE"
+}
+
+case "${1:-}" in
+  verify) verify ;;
+  reset) reset ;;
+  _reset-locked) reset_locked ;;
+  *) printf 'Usage: %s {verify|reset}\n' "$0" >&2; exit 2 ;;
+esac

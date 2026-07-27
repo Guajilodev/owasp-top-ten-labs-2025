@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Create stopped containers, install containment, then start the lab.
+# This is invoked by nexolab-start.service at boot. Compose restart policies
+# are deliberately disabled so Docker cannot race this gate after a reboot.
+# Do not replace this with `docker compose up`: the order is the control.
+set -euo pipefail
+
+readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:-/opt/owasp2025}"
+readonly COMPOSE_FILE="${NEXOLAB_COMPOSE_FILE:-${PROJECT_DIR}/docker-compose.prod.yml}"
+readonly FIREWALL_BIN="${NEXOLAB_FIREWALL_BIN:-/usr/local/sbin/nexolab-firewall}"
+readonly RUNTIME_VERIFY_BIN="${NEXOLAB_RUNTIME_VERIFY_BIN:-/usr/local/sbin/nexolab-runtime-verify}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
+readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
+
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+[ "${EUID}" -eq 0 ] || fail 'Start must run as root.'
+[ -f "$COMPOSE_FILE" ] || fail "Production Compose file is missing: $COMPOSE_FILE"
+
+cd "$PROJECT_DIR"
+compose() {
+  docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_DIR" "$@"
+}
+
+stop_started_services() {
+  # Stop web before its only dependency. This is synchronous: OnFailure is only
+  # notification and must never be the mechanism that contains a failed start.
+  local service container cleanup_failed=false
+  for service in web db; do
+    if [ "$service" = web ]; then
+      container="$WEB_CONTAINER"
+    else
+      container="$DB_CONTAINER"
+    fi
+    if ! compose stop "$service"; then
+      printf 'ERROR: Compose could not stop %s; attempting direct Docker stop.\n' "$service" >&2
+      if ! docker stop --time 10 "$container"; then
+        printf 'ERROR: Direct Docker stop failed for %s.\n' "$service" >&2
+        cleanup_failed=true
+      fi
+    fi
+    local state
+    if ! state="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" || [ "$state" != false ]; then
+      printf 'ERROR: %s could not be confirmed stopped after failed start cleanup.\n' "$service" >&2
+      cleanup_failed=true
+    fi
+  done
+  [ "$cleanup_failed" = false ]
+}
+
+start() {
+  local services_may_be_running=false start_verified=false
+  cleanup_failed_start() {
+    local status="$?"
+    trap - EXIT
+    if [ "$services_may_be_running" = true ] && [ "$start_verified" != true ]; then
+      if ! stop_started_services; then
+        printf 'ERROR: Failed-start containment could not be confirmed.\n' >&2
+        exit 1
+      fi
+    fi
+    exit "$status"
+  }
+  trap cleanup_failed_start EXIT
+
+# `up --no-start` creates both dynamic bridges and stopped containers. A failed
+# firewall install therefore cannot start an uncontained web process.
+  compose up --no-start --build
+  "$FIREWALL_BIN" apply
+  "$FIREWALL_BIN" verify
+  # Set this before Compose starts anything: a partial Compose failure is also
+  # a containment failure and must not leave web (or DB) running.
+  services_may_be_running=true
+  compose start
+  "$RUNTIME_VERIFY_BIN"
+  start_verified=true
+}
+
+start
