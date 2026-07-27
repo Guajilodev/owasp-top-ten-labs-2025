@@ -125,12 +125,5 @@ networks:
 
 volumes:
   nexo_db:
+    external: true
     name: owasp_nexo_db_2025
-    driver: local
-    driver_opts:
-      # Provision this as a small, dedicated host filesystem with
-      # deploy/production/nexolab-storage before starting production.
-      # A bind mount keeps MariaDB data off the host root filesystem.
-      type: none
-      o: bind
-      device: ${NEXOLAB_DB_STORAGE_PATH:?Set NEXOLAB_DB_STORAGE_PATH to the dedicated bounded database mount}
