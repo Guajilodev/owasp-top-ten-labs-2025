@@ -96,7 +96,7 @@ verify() {
     fail 'The DB slice I/O write limit is missing or inconsistent.'
   grep -Fqx "IOReadBandwidthMax=${NEXOLAB_DB_IO_DEVICE} ${NEXOLAB_DB_WRITE_MIB_PER_SEC}M" "$DROP_IN_FILE" || \
     fail 'The DB slice I/O read limit is missing or inconsistent.'
-  local device_id rate_bytes io_line cgroup_parent io_path
+  local device_id rate_bytes io_line cgroup_parent io_path retries=0
   device_id="$(lsblk -dn -o MAJ:MIN "$NEXOLAB_DB_IO_DEVICE")"
   # cgroup io.max rates are in bytes/s using SI units (1 MB = 1,000,000 bytes),
   # matching systemd's IOReadBandwidthMax/IOWriteBandwidthMax "M" suffix.
@@ -108,7 +108,16 @@ verify() {
   [ -n "$cgroup_parent" ] || cgroup_parent="/"
   io_path="/sys/fs/cgroup${cgroup_parent}/io.max"
   [ -r "$io_path" ] || fail "Cannot read DB-slice io.max at $io_path."
-  io_line="$(grep -F "${device_id} " "$io_path" || true)"
+  # The io.max file may be empty until containers start writing to the cgroup.
+  # Retry up to 5 times with 1s intervals to let the kernel populate the values.
+  while [ "$retries" -lt 5 ]; do
+    io_line="$(grep -F "${device_id} " "$io_path" || true)"
+    if [[ "$io_line" == *"rbps=${rate_bytes}"* && "$io_line" == *"wbps=${rate_bytes}"* ]]; then
+      break
+    fi
+    retries=$((retries + 1))
+    sleep 1
+  done
   [[ "$io_line" == *"rbps=${rate_bytes}"* && "$io_line" == *"wbps=${rate_bytes}"* ]] || \
     fail 'The effective DB-slice I/O limit is missing from cgroup io.max.'
   printf 'Bounded DB storage configuration verification passed.\n'
