@@ -96,10 +96,17 @@ verify() {
     fail 'The DB slice I/O write limit is missing or inconsistent.'
   grep -Fqx "IOReadBandwidthMax=${NEXOLAB_DB_IO_DEVICE} ${NEXOLAB_DB_WRITE_MIB_PER_SEC}M" "$DROP_IN_FILE" || \
     fail 'The DB slice I/O read limit is missing or inconsistent.'
-  local device_id rate_bytes io_line
+  local device_id rate_bytes io_line cgroup_parent io_path
   device_id="$(lsblk -dn -o MAJ:MIN "$NEXOLAB_DB_IO_DEVICE")"
   rate_bytes=$((NEXOLAB_DB_WRITE_MIB_PER_SEC * 1024 * 1024))
-  io_line="$(grep -F "${device_id} " /sys/fs/cgroup/nexolab-db.slice/io.max || true)"
+  # The DB slice may be nested under the parent nexolab.slice (PartOf=).
+  # Discover the actual cgroup path from a running container in the slice.
+  cgroup_parent="$(systemctl show nexolab-db.slice --property='ControlGroup' | cut -d= -f2)"
+  cgroup_parent="${cgroup_parent#/sys/fs/cgroup}"
+  [ -n "$cgroup_parent" ] || cgroup_parent="/"
+  io_path="/sys/fs/cgroup${cgroup_parent}/io.max"
+  [ -r "$io_path" ] || fail "Cannot read DB-slice io.max at $io_path."
+  io_line="$(grep -F "${device_id} " "$io_path" || true)"
   [[ "$io_line" == *"rbps=${rate_bytes}"* && "$io_line" == *"wbps=${rate_bytes}"* ]] || \
     fail 'The effective DB-slice I/O limit is missing from cgroup io.max.'
   printf 'Bounded DB storage configuration verification passed.\n'

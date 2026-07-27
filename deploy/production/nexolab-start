@@ -47,12 +47,18 @@ stop_started_services() {
   [ "$cleanup_failed" = false ]
 }
 
+# Globals so the EXIT trap handler can read them (bash nested functions do not
+# inherit `local` variables from their parent function's scope).
+_services_may_be_running=false
+_start_verified=false
+
 start() {
-  local services_may_be_running=false start_verified=false
+  _services_may_be_running=false
+  _start_verified=false
   cleanup_failed_start() {
     local status="$?"
     trap - EXIT
-    if [ "$services_may_be_running" = true ] && [ "$start_verified" != true ]; then
+    if [ "$_services_may_be_running" = true ] && [ "$_start_verified" != true ]; then
       if ! stop_started_services; then
         printf 'ERROR: Failed-start containment could not be confirmed.\n' >&2
         exit 1
@@ -69,10 +75,10 @@ start() {
   "$FIREWALL_BIN" verify
   # Set this before Compose starts anything: a partial Compose failure is also
   # a containment failure and must not leave web (or DB) running.
-  services_may_be_running=true
+  _services_may_be_running=true
   compose start
   "$RUNTIME_VERIFY_BIN"
-  start_verified=true
+  _start_verified=true
 }
 
 start
