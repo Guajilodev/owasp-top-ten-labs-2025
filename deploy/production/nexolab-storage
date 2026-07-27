@@ -98,7 +98,9 @@ verify() {
     fail 'The DB slice I/O read limit is missing or inconsistent.'
   local device_id rate_bytes io_line cgroup_parent io_path
   device_id="$(lsblk -dn -o MAJ:MIN "$NEXOLAB_DB_IO_DEVICE")"
-  rate_bytes=$((NEXOLAB_DB_WRITE_MIB_PER_SEC * 1024 * 1024))
+  # cgroup io.max rates are in bytes/s using SI units (1 MB = 1,000,000 bytes),
+  # matching systemd's IOReadBandwidthMax/IOWriteBandwidthMax "M" suffix.
+  rate_bytes=$((NEXOLAB_DB_WRITE_MIB_PER_SEC * 1000000))
   # The DB slice may be nested under the parent nexolab.slice (PartOf=).
   # Discover the actual cgroup path from a running container in the slice.
   cgroup_parent="$(systemctl show nexolab-db.slice --property='ControlGroup' | cut -d= -f2)"
