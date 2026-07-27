@@ -97,7 +97,9 @@ verify() {
   grep -Fqx "IOReadBandwidthMax=${NEXOLAB_DB_IO_DEVICE} ${NEXOLAB_DB_WRITE_MIB_PER_SEC}M" "$DROP_IN_FILE" || \
     fail 'The DB slice I/O read limit is missing or inconsistent.'
   local device_id rate_bytes io_line cgroup_parent io_path retries=0
-  device_id="$(lsblk -dn -o MAJ:MIN "$NEXOLAB_DB_IO_DEVICE")"
+  # lsblk -dn pads output with spaces; trim so grep matches the kernel's
+  # space-free format in /sys/fs/cgroup/.../io.max (e.g. "7:0 rbps=…").
+  device_id="$(lsblk -dn -o MAJ:MIN "$NEXOLAB_DB_IO_DEVICE" | tr -d '[:space:]')"
   # cgroup io.max rates are in bytes/s using SI units (1 MB = 1,000,000 bytes),
   # matching systemd's IOReadBandwidthMax/IOWriteBandwidthMax "M" suffix.
   rate_bytes=$((NEXOLAB_DB_WRITE_MIB_PER_SEC * 1000000))
