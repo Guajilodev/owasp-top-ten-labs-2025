@@ -36,6 +36,14 @@ network_id() {
   printf '%s\n' "${matches[0]}"
 }
 
+container_exists() {
+  local by_id by_name
+  if ! by_id="$(docker ps -aq --no-trunc --filter "id=$1")"; then return 2; fi
+  [ -z "$by_id" ] || return 0
+  if ! by_name="$(docker ps -aq --no-trunc --filter "name=^/${1}$")"; then return 2; fi
+  [ -n "$by_name" ]
+}
+
 ensure_upstream_directory() {
   if [ ! -e "$UPSTREAM_DIR" ]; then install -d -o root -g root -m 0755 "$UPSTREAM_DIR" || fail 'Could not create nginx upstream directory.'; fi
   if ! { [ -d "$UPSTREAM_DIR" ] && [ ! -L "$UPSTREAM_DIR" ]; }; then fail 'Nginx upstream directory is unsafe.'; fi
@@ -101,9 +109,21 @@ current_snapshot_matches() {
 }
 
 quarantine() {
-  local state
-  state="$(docker inspect --format '{{.State.Running}}' "$WEB_CONTAINER" 2>/dev/null || printf false)"
-  [ "$state" = false ] || fail 'Web container must be stopped before nginx quarantine.'
+  local state inspect_status=0 exists_status
+  # A running web must never be quarantined out from under live traffic. An
+  # absent container is a legitimate not-running state (e.g. before the first
+  # `compose up`); only a genuinely running container blocks quarantine.
+  # `docker inspect` on an absent container prints an empty line to stdout and
+  # exits non-zero, so capture status explicitly instead of `|| printf false`.
+  state="$(docker inspect --format '{{.State.Running}}' "$WEB_CONTAINER" 2>/dev/null)" || inspect_status=$?
+  if [ "$inspect_status" -eq 0 ]; then
+    [ "$state" = false ] || fail 'Web container must be stopped before nginx quarantine.'
+  elif container_exists "$WEB_CONTAINER"; then
+    fail 'Could not inspect the web container state before nginx quarantine.'
+  else
+    exists_status=$?
+    [ "$exists_status" -eq 1 ] || fail 'Could not determine whether the web container exists before nginx quarantine.'
+  fi
   [ ! -e "$QUARANTINE_SOCKET" ] || fail 'Nginx quarantine socket must be absent.'
   ensure_upstream_directory
   write_include "$(quarantine_include)"$'\n'

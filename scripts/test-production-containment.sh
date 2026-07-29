@@ -65,6 +65,7 @@ set -euo pipefail
 state_dir="${NEXOLAB_TEST_STATE:-}"
 role_frontend="${NEXOLAB_TEST_FRONTEND_ROLE:-frontend}"
 role_backend="${NEXOLAB_TEST_BACKEND_ROLE:-backend}"
+[ -z "${NEXOLAB_TEST_DOCKER_LOG:-}" ] || printf '%s\n' "$*" >>"$NEXOLAB_TEST_DOCKER_LOG"
 case "${1:-}:${2:-}" in
   network:ls)
     printf 'front\nback\n'
@@ -81,6 +82,11 @@ case "${1:-}:${2:-}" in
   info:--format) printf 'systemd\n' ;;
   version:--format) printf '29.3.1\n' ;;
   inspect:--format)
+    if [ "${NEXOLAB_TEST_ABSENT_CONTAINER:-0}" = 1 ]; then
+      # Docker inspect prints a blank line before it reports a missing container.
+      printf '\n'
+      exit 1
+    fi
     format="$3"; container="${!#}"
     id="$(<"$state_dir/id")"; running="$(<"$state_dir/running")"; ip="$(<"$state_dir/ip")"
     case "$format" in
@@ -104,6 +110,10 @@ case "${1:-}:${2:-}" in
       *'.NetworkSettings.Ports'*) printf '{"80/tcp":null}\n' ;;
       *'.HostConfig.PortBindings'*) printf '{}\n' ;;
     esac
+    ;;
+  ps:-aq)
+    # A missing container is not an error when Docker is asked to list it.
+    # Keep stdout empty so the helper can distinguish absence from a query failure.
     ;;
 esac
 SH
@@ -155,6 +165,20 @@ run_upstream quarantine
 grep -Fqx '    server unix:/run/nexolab-quarantine.sock;' "$temp/upstream/etc/nginx/nexolab/upstream.conf" || fail 'quarantine did not replace stale endpoint'
 [ "$(<"$temp/endpoint.log")" = $'nginx -t\nsystemctl reload nginx' ] || fail 'quarantine did not validate then reload'
 pass 'quarantine replaces a stale upstream before a web start'
+
+# Docker inspect writes a blank line and exits nonzero for a missing container.
+# The subsequent empty `docker ps -aq` lookups prove this is first installation,
+# not an inspect failure for an existing web container.
+rm -f -- "$temp/upstream/etc/nginx/nexolab/upstream.conf"
+: >"$temp/endpoint.log"
+: >"$temp/absent-quarantine-docker.log"
+NEXOLAB_TEST_ABSENT_CONTAINER=1 NEXOLAB_TEST_DOCKER_LOG="$temp/absent-quarantine-docker.log" run_upstream quarantine
+[ -f "$temp/upstream/etc/nginx/nexolab/upstream.conf" ] || fail 'absent-container quarantine did not write the upstream include'
+grep -Fqx '    server unix:/run/nexolab-quarantine.sock;' "$temp/upstream/etc/nginx/nexolab/upstream.conf" || fail 'absent-container quarantine did not install the unix-socket include'
+[ "$(<"$temp/endpoint.log")" = $'nginx -t\nsystemctl reload nginx' ] || fail 'absent-container quarantine did not validate then reload'
+grep -Fqx 'ps -aq --no-trunc --filter id=owasp-web-2025' "$temp/absent-quarantine-docker.log" || fail 'absent-container quarantine did not prove the ID lookup empty'
+grep -Fqx 'ps -aq --no-trunc --filter name=^/owasp-web-2025$' "$temp/absent-quarantine-docker.log" || fail 'absent-container quarantine did not prove the name lookup empty'
+pass 'quarantine accepts a genuinely absent web container before first Compose creation'
 
 # Retain the stopped fixture and make only the mocked start transition expose
 # its already-stored runtime address.
