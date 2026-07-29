@@ -65,18 +65,36 @@ set -euo pipefail
 state_dir="${NEXOLAB_TEST_STATE:-}"
 role_frontend="${NEXOLAB_TEST_FRONTEND_ROLE:-frontend}"
 role_backend="${NEXOLAB_TEST_BACKEND_ROLE:-backend}"
+frontend_short_id='1405359a5884'
+backend_short_id='f2c1191a730b'
+frontend_full_id='1405359a58840123456789abcdef0123456789abcdef0123456789abcdef0123'
+backend_full_id='f2c1191a730b456789abcdef0123456789abcdef0123456789abcdef01234567'
+bridge_full_id='a4b5c6d7e8f90123456789abcdef0123456789abcdef0123456789abcdef0123'
 [ -z "${NEXOLAB_TEST_DOCKER_LOG:-}" ] || printf '%s\n' "$*" >>"$NEXOLAB_TEST_DOCKER_LOG"
 case "${1:-}:${2:-}" in
   network:ls)
-    printf 'front\nback\n'
-    [ "${NEXOLAB_TEST_DUPLICATE_ROLE:-0}" = 1 ] && printf 'front-duplicate\n'
+    printf '%s\n%s\n' "$frontend_short_id" "$backend_short_id"
+    [ "${NEXOLAB_TEST_DUPLICATE_ROLE:-0}" = 1 ] && printf 'c0ffee123456\n'
     ;;
   network:inspect)
-    case "$*" in
+    network_id="$3"; format="${!#}"
+    case "$format" in
       *'com.docker.compose.network'*)
-        case "$*" in *front-duplicate*) printf 'frontend\n' ;; *front*) printf '%s\n' "$role_frontend" ;; *back*) printf '%s\n' "$role_backend" ;; esac ;;
-      *'.Internal'*) printf '%s\n' "${NEXOLAB_TEST_INTERNAL:-true}" ;;
-      *'.Driver'*) printf 'bridge\n' ;;
+        case "$network_id" in
+          "$frontend_short_id"|c0ffee123456) printf '%s\n' "$role_frontend" ;;
+          "$backend_short_id") printf '%s\n' "$role_backend" ;;
+        esac
+        ;;
+      '{{.Id}}')
+        [ "${NEXOLAB_TEST_MALFORMED_NETWORK_ID:-0}" = 1 ] && { printf 'not-a-canonical-network-id\n'; exit 0; }
+        case "$network_id" in
+          "$frontend_short_id") printf '%s\n' "$frontend_full_id" ;;
+          "$backend_short_id") printf '%s\n' "$backend_full_id" ;;
+          *) exit 1 ;;
+        esac
+        ;;
+      '{{.Internal}}') printf '%s\n' "${NEXOLAB_TEST_INTERNAL:-true}" ;;
+      '{{.Driver}}') printf 'bridge\n' ;;
     esac
     ;;
   info:--format) printf 'systemd\n' ;;
@@ -96,14 +114,14 @@ case "${1:-}:${2:-}" in
         # Docker 29 truth: stopped endpoints are unusable. A valid address is
         # emitted only after the mocked start transition sets running=true.
         if [[ "$container" == *db* ]] && [ "$running" = true ]; then
-          printf 'back\t172.22.0.3\n'
+          printf '%s\t172.22.0.3\n' "$backend_full_id"
         elif [ "$running" = true ]; then
-          printf 'front\t%s\nback\t172.22.0.3\n' "$ip"
-          [ "${NEXOLAB_TEST_EXTRA_BRIDGE:-0}" = 1 ] && printf 'bridge\t172.17.0.2\n'
+          printf '%s\t%s\n%s\t172.22.0.3\n' "$frontend_full_id" "$ip" "$backend_full_id"
+          [ "${NEXOLAB_TEST_EXTRA_BRIDGE:-0}" = 1 ] && printf '%s\t172.17.0.2\n' "$bridge_full_id"
         elif [[ "$container" == *db* ]]; then
-          printf 'back\tinvalid IP\n'
+          printf '%s\tinvalid IP\n' "$backend_full_id"
         else
-          printf 'front\tinvalid IP\nback\tinvalid IP\n'
+          printf '%s\tinvalid IP\n%s\tinvalid IP\n' "$frontend_full_id" "$backend_full_id"
         fi
         ;;
       *'.HostConfig.PublishAllPorts'*) printf 'false\n' ;;
@@ -215,10 +233,17 @@ expect_failure env PATH="$temp/mocks/bin:$PATH" NEXOLAB_TEST_STATE="$temp/endpoi
 expect_failure env PATH="$temp/mocks/bin:$PATH" NEXOLAB_TEST_STATE="$temp/endpoint-state" NEXOLAB_TEST_INTERNAL=false "$RUNTIME" pre-start
 pass 'pre-start verification accepts stopped Docker 29 containers and rejects unsafe role topology'
 
-# Exercise runtime attachment equality directly; full post-start host controls
-# are separately host-gated and intentionally are not mocked as proof.
+# Docker network ls -q returns 12-character IDs, while container attachments
+# expose the canonical 64-character IDs. Exact attachment equality must use
+# canonical network IDs rather than prefix matching.
 prepare_endpoint_state true
-PATH="$temp/mocks/bin:$PATH" NEXOLAB_TEST_STATE="$temp/endpoint-state" bash -c 'source "$1"; discover_networks; verify_container_attachments owasp-web-2025 "$FRONTEND_ID" "$BACKEND_ID"' -- "$RUNTIME"
+PATH="$temp/mocks/bin:$PATH" NEXOLAB_TEST_STATE="$temp/endpoint-state" bash -c '
+  source "$1"
+  discover_networks
+  [ "$FRONTEND_ID" = "$2" ] && [ "$BACKEND_ID" = "$3" ]
+  verify_container_attachments owasp-web-2025 "$FRONTEND_ID" "$BACKEND_ID"
+' -- "$RUNTIME" 1405359a58840123456789abcdef0123456789abcdef0123456789abcdef0123 f2c1191a730b456789abcdef0123456789abcdef0123456789abcdef01234567
+pass 'runtime verifier canonicalizes short network discovery IDs before exact full attachment checks'
 # The real post-start path reaches web attachment equality after validating the
 # DB attachment. Controls are overridden only because this disposable double
 # does not model host cgroups or the production storage mount.
@@ -226,6 +251,9 @@ PATH="$temp/mocks/bin:$PATH" NEXOLAB_TEST_STATE="$temp/endpoint-state" bash -c '
 expect_failure_output "$temp/extra-network.out" env PATH="$temp/mocks/bin:$PATH" NEXOLAB_TEST_STATE="$temp/endpoint-state" NEXOLAB_TEST_EXTRA_BRIDGE=1 bash -c 'source "$1"; verify_container_controls() { :; }; post_start all' -- "$RUNTIME"
 grep -Fq 'owasp-web-2025 has an unexpected network attachment set.' "$temp/extra-network.out" || fail 'post-start verifier did not reject the extra bridge attachment'
 pass 'runtime post-start verification requires exact web attachments and rejects extra bridge'
+
+prepare_endpoint_state true
+NEXOLAB_TEST_MALFORMED_NETWORK_ID=1 expect_failure run_upstream refresh
 
 mkdir -p "$temp/absent/bin"
 cat >"$temp/absent/bin/docker" <<'SH'
@@ -365,10 +393,10 @@ printf '%s\n' "$*" >>"$NEXOLAB_TEST_LOG"
 if [[ "${NEXOLAB_TEST_FAIL:-}" = docker-user-jump && "$*" == *'-I DOCKER-USER 1'* ]]; then
   exit 1
 fi
-if [[ "${NEXOLAB_TEST_MISSING_INGRESS_DROP:-}" = frontend && "$*" == *'-C '* && "$*" == *'-i br-front -m conntrack --ctstate NEW -j DROP'* ]]; then
+if [[ "${NEXOLAB_TEST_MISSING_INGRESS_DROP:-}" = frontend && "$*" == *'-C '* && "$*" == *'-i br-1405359a5884 -m conntrack --ctstate NEW -j DROP'* ]]; then
   exit 1
 fi
-if [[ "${NEXOLAB_TEST_MISSING_INGRESS_DROP:-}" = backend && "$*" == *'-C '* && "$*" == *'-i br-back -m conntrack --ctstate NEW -j DROP'* ]]; then
+if [[ "${NEXOLAB_TEST_MISSING_INGRESS_DROP:-}" = backend && "$*" == *'-C '* && "$*" == *'-i br-f2c1191a730b -m conntrack --ctstate NEW -j DROP'* ]]; then
   exit 1
 fi
 SH
@@ -379,11 +407,11 @@ env PATH="$temp/firewall/bin:$temp/mocks/bin:$PATH" NEXOLAB_TEST_LOG="$temp/fire
 python3 - "$temp/firewall/iptables.log" <<'PY'
 import sys
 log = open(sys.argv[1], encoding="utf-8").read()
-assert '-i br-front -o br-back -p tcp --dport 3306' in log
-assert '-i br-front -m conntrack --ctstate NEW -j DROP' in log
-assert '-i br-back -m conntrack --ctstate NEW -j DROP' in log
-assert '-o br-front -m conntrack --ctstate NEW -j DROP' in log
-assert '-o br-back -m conntrack --ctstate NEW -j DROP' in log
+assert '-i br-1405359a5884 -o br-f2c1191a730b -p tcp --dport 3306' in log
+assert '-i br-1405359a5884 -m conntrack --ctstate NEW -j DROP' in log
+assert '-i br-f2c1191a730b -m conntrack --ctstate NEW -j DROP' in log
+assert '-o br-1405359a5884 -m conntrack --ctstate NEW -j DROP' in log
+assert '-o br-f2c1191a730b -m conntrack --ctstate NEW -j DROP' in log
 assert '-i lo -o br-front -p tcp --dport 80' not in log
 PY
 pass 'firewall generator permits only loopback-to-web and web-to-DB while blocking direct bridge publishes'

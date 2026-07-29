@@ -20,7 +20,7 @@ valid_ipv4() {
 }
 
 network_id() {
-  local role="$1" id found_role
+  local role="$1" id found_role canonical_id
   local -a matches=()
   while IFS= read -r id; do
     [ -n "$id" ] || continue
@@ -28,7 +28,9 @@ network_id() {
     [ "$found_role" = "$role" ] && matches+=("$id")
   done < <(docker network ls -q --filter "label=com.docker.compose.project=${PROJECT}")
   [ "${#matches[@]}" -eq 1 ] || fail "Expected exactly one project ${role} network."
-  printf '%s\n' "${matches[0]}"
+  canonical_id="$(docker network inspect "${matches[0]}" --format '{{.Id}}')" || fail "Could not resolve Docker network ${matches[0]} to its canonical ID."
+  [[ "$canonical_id" =~ ^[a-f0-9]{64}$ ]] || fail "Docker network ${matches[0]} did not resolve to a full canonical ID."
+  printf '%s\n' "$canonical_id"
 }
 
 discover_networks() {
