@@ -22,20 +22,22 @@ require_safe_docker() {
   local major
   major="$(docker version --format '{{.Server.Version}}' | cut -d. -f1)"
   [[ "$major" =~ ^[0-9]+$ && "$major" -ge "$MIN_DOCKER_MAJOR" ]] || \
-    fail "Docker Engine ${MIN_DOCKER_MAJOR}+ is required for safe loopback publishing."
+    fail "Docker Engine ${MIN_DOCKER_MAJOR}+ is required for production containment."
 }
 
 network_id() {
-  local role="$1" id
+  local role="$1" id found_role
+  local -a matches=()
   while IFS= read -r id; do
     [ -n "$id" ] || continue
-    if [ "$(docker network inspect "$id" --format '{{ index .Labels "com.docker.compose.network" }}')" = "$role" ]; then
-      printf '%s\n' "$id"
-      return 0
-    fi
+    found_role="$(docker network inspect "$id" --format '{{ index .Labels "com.docker.compose.network" }}')" || return 1
+    [ "$found_role" = "$role" ] && matches+=("$id")
   done < <(docker network ls -q --filter "label=com.docker.compose.project=${PROJECT}")
-  printf 'Network %s is not available for Compose project %s.\n' "$role" "$PROJECT" >&2
-  return 1
+  if [ "${#matches[@]}" -ne 1 ]; then
+    printf 'Expected exactly one %s network for Compose project %s.\n' "$role" "$PROJECT" >&2
+    return 1
+  fi
+  printf '%s\n' "${matches[0]}"
 }
 
 bridge_for_network() {
@@ -52,8 +54,12 @@ bridge_for_network() {
 }
 
 discover_bridges() {
-  FRONTEND_BRIDGE="$(bridge_for_network "$(network_id frontend)")"
-  BACKEND_BRIDGE="$(bridge_for_network "$(network_id backend)")"
+  local frontend_id backend_id
+  frontend_id="$(network_id frontend)" || return 1
+  backend_id="$(network_id backend)" || return 1
+  [ "$frontend_id" != "$backend_id" ] || { printf 'Frontend and backend network IDs must differ.\n' >&2; return 1; }
+  FRONTEND_BRIDGE="$(bridge_for_network "$frontend_id")"
+  BACKEND_BRIDGE="$(bridge_for_network "$backend_id")"
 }
 
 firewall_binaries() {
@@ -88,9 +94,7 @@ create_forward_chain() {
   local bin="$1" chain="$2"
   ipt "$bin" -N "$chain"
   ipt "$bin" -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-  # The explicit output-interface drops defend direct publishing even if a
-  # Docker regression reintroduces the pre-28 loopback L2 exposure.
-  ipt "$bin" -A "$chain" -i lo -o "$FRONTEND_BRIDGE" -p tcp --dport 80 -m conntrack --ctstate NEW -j ACCEPT
+  # Host nginx reaches the frontend bridge through the host route, not FORWARD.
   ipt "$bin" -A "$chain" -i "$FRONTEND_BRIDGE" -o "$BACKEND_BRIDGE" -p tcp --dport 3306 -m conntrack --ctstate NEW -j ACCEPT
   ipt "$bin" -A "$chain" -i "$FRONTEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
   ipt "$bin" -A "$chain" -i "$BACKEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
@@ -181,8 +185,9 @@ verify() {
     ipt "$bin" -C DOCKER-USER -m comment --comment "$TAG" -j "$forward"
     ipt "$bin" -C "$input" -i "$FRONTEND_BRIDGE" -j DROP
     ipt "$bin" -C "$input" -i "$BACKEND_BRIDGE" -j DROP
-    ipt "$bin" -C "$forward" -i lo -o "$FRONTEND_BRIDGE" -p tcp --dport 80 -m conntrack --ctstate NEW -j ACCEPT
     ipt "$bin" -C "$forward" -i "$FRONTEND_BRIDGE" -o "$BACKEND_BRIDGE" -p tcp --dport 3306 -m conntrack --ctstate NEW -j ACCEPT
+    ipt "$bin" -C "$forward" -i "$FRONTEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
+    ipt "$bin" -C "$forward" -i "$BACKEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
     ipt "$bin" -C "$forward" -o "$FRONTEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
     ipt "$bin" -C "$forward" -o "$BACKEND_BRIDGE" -m conntrack --ctstate NEW -j DROP
   done < <(firewall_binaries)

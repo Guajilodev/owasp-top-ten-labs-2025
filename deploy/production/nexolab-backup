@@ -68,6 +68,8 @@ create() {
   copy_required "$PROJECT_DIR/mysql/init.sql" "$staging/project/mysql/init.sql"
   copy_required "$PROJECT_DIR/mysql/my.cnf" "$staging/project/mysql/my.cnf"
   copy_required /etc/nginx/sites-available/nexolab.guajilodev.com "$staging/host/nexolab.guajilodev.com"
+  copy_required /usr/local/sbin/nexolab-nginx-upstream "$staging/host/nexolab-nginx-upstream"
+  copy_required /etc/nginx/nexolab/upstream.conf "$staging/host/nexolab-upstream.conf"
   copy_required /usr/local/sbin/nexolab-reset "$staging/host/nexolab-reset"
   copy_required /usr/local/sbin/nexolab-firewall "$staging/host/nexolab-firewall"
   copy_required /usr/local/sbin/nexolab-storage "$staging/host/nexolab-storage"

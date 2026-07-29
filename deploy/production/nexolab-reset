@@ -8,13 +8,16 @@ readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
 readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
 readonly UPLOAD_DIR="/var/www/html/a02_admin/uploads"
 readonly A09_LOG_DIR="/var/www/html/a09_actividad/logs"
-readonly LOCK_FILE="${NEXOLAB_LOCK_FILE:-/run/nexolab-reset.lock}"
-readonly LOCK_TIMEOUT_SECONDS=30
+readonly LOCK_FILE="${NEXOLAB_LIFECYCLE_LOCK_FILE:-/run/nexolab-lifecycle.lock}"
+readonly LOCK_TIMEOUT_SECONDS="${NEXOLAB_LIFECYCLE_LOCK_TIMEOUT_SECONDS:-30}"
 readonly RESET_TIMEOUT_SECONDS="${NEXOLAB_RESET_TIMEOUT_SECONDS:-180}"
 readonly COMMAND_TIMEOUT_SECONDS="${NEXOLAB_COMMAND_TIMEOUT_SECONDS:-30}"
 readonly TERM_GRACE_SECONDS="${NEXOLAB_TERM_GRACE_SECONDS:-10}"
 readonly SECRETS_FILE="${NEXOLAB_SECRETS_FILE:-/etc/nexolab/secrets.env}"
 readonly RECOVERY_DIR="${NEXOLAB_RECOVERY_DIR:-/var/lib/nexolab-reset-recovery}"
+readonly NGINX_UPSTREAM_BIN="${NEXOLAB_NGINX_UPSTREAM_BIN:-/usr/local/sbin/nexolab-nginx-upstream}"
+readonly FIREWALL_BIN="${NEXOLAB_FIREWALL_BIN:-/usr/local/sbin/nexolab-firewall}"
+readonly RUNTIME_VERIFY_BIN="${NEXOLAB_RUNTIME_VERIFY_BIN:-/usr/local/sbin/nexolab-runtime-verify}"
 
 report_failure() {
   if [ -x /usr/local/sbin/nexolab-report-failure ]; then
@@ -66,8 +69,38 @@ database_ready() {
   db_root -Nse 'SELECT 1' | grep -qx 1
 }
 
+container_exists() {
+  local by_id by_name
+  if ! by_id="$(run_bounded docker ps -aq --no-trunc --filter "id=$1")"; then
+    return 2
+  fi
+  [ -z "$by_id" ] || return 0
+  if ! by_name="$(run_bounded docker ps -aq --no-trunc --filter "name=^/${1}$")"; then
+    return 2
+  fi
+  [ -n "$by_name" ]
+}
+
 container_running() {
-  run_bounded docker inspect --format '{{.State.Running}}' "$1"
+  local state status
+  if state="$(run_bounded docker inspect --format '{{.State.Running}}' "$1")"; then
+    case "$state" in
+      true|false) printf '%s\n' "$state" ;;
+      *) return 1 ;;
+    esac
+    return 0
+  fi
+
+  # An absent container is a legitimate stopped state. A failed inspection of
+  # an existing container, or a failed Docker query while proving absence, is
+  # fatal to the caller.
+  status=0
+  container_exists "$1" || status=$?
+  case "$status" in
+    0) return 1 ;;          # exists but inspect failed -> fatal
+    1) printf 'false\n' ;;  # proven absent -> legitimate stopped state
+    *) return 1 ;;          # docker query failed while proving absence -> fatal
+  esac
 }
 
 verify() {
@@ -184,50 +217,53 @@ replace_with_clean_seed() {
 }
 
 cleanup_reset_schemas() {
+  [ -n "${stage_database:-}" ] || return 0
   db_root -e "DROP DATABASE IF EXISTS \`${stage_database}\`;" || return 1
   if database_exists "$stage_database"; then
     return 1
   fi
 }
 
-stop_web_and_confirm() {
-  local state
-  state="$(container_running "$WEB_CONTAINER")" || return 1
+stop_and_confirm() {
+  local container="$1" state
+  state="$(container_running "$container")" || return 1
   [ "$state" = false ] && return 0
-  if ! run_bounded docker stop --time 10 "$WEB_CONTAINER"; then
+  if ! run_bounded docker stop --time 10 "$container"; then
     # A Docker client timeout is a failed reset operation, even if the direct
     # KILL fallback proves containment. The caller must not continue/reset-start.
-    run_bounded docker kill "$WEB_CONTAINER" || return 1
-    state="$(container_running "$WEB_CONTAINER")" || return 1
+    run_bounded docker kill "$container" || return 1
+    state="$(container_running "$container")" || return 1
     [ "$state" = false ] || return 1
     return 1
   fi
-  state="$(container_running "$WEB_CONTAINER")" || return 1
+  state="$(container_running "$container")" || return 1
   [ "$state" = false ]
 }
 
-reset_locked() {
-  local web_should_run=false reset_succeeded=false live_replaced=false stage_database recovery_archive=''
-  load_env
-  database_ready
+stop_web_and_confirm() { stop_and_confirm "$WEB_CONTAINER"; }
 
-  stage_database="nexolab_reset_stage_${$}_${RANDOM}"
-  [[ "$stage_database" =~ ^[A-Za-z0-9_]+$ ]] || fail 'Could not create a safe reset staging name.'
+contain_failed_reset() {
+  local cleanup_failed=false
+  stop_and_confirm "$WEB_CONTAINER" || cleanup_failed=true
+  stop_and_confirm "$DB_CONTAINER" || cleanup_failed=true
+  "$NGINX_UPSTREAM_BIN" quarantine || report_failure 'reset failure could not restore nginx quarantine'
+  [ "$cleanup_failed" = false ]
+}
+
+reset_locked() {
+  local db_state web_state web_should_run=false reset_succeeded=false live_replaced=false stage_database='' recovery_archive=''
+  local _services_may_be_running=false
 
   cleanup_reset_failure() {
     local status="$?"
     trap - EXIT HUP INT TERM
-    if [ "$reset_succeeded" != true ]; then
-      # A failed reset never reopens the intentionally vulnerable web service.
-      # This includes failures before replacement and Docker command timeouts.
-      if ! stop_web_and_confirm; then
-        report_failure 'reset failed and web could not be confirmed stopped'
-      fi
+    if [ "$_services_may_be_running" = true ] && [ "$reset_succeeded" != true ]; then
+      contain_failed_reset || report_failure 'reset failed and containment could not confirm both services stopped'
       if ! cleanup_reset_schemas; then
         report_failure 'reset failure could not prove removal of temporary recovery or staging schemas'
       fi
       if [ "$live_replaced" = true ]; then
-        printf 'ERROR: reset failed after live schema replacement; web remains stopped pending operator recovery.\n' >&2
+        printf 'ERROR: reset failed after live schema replacement; services remain stopped pending operator recovery.\n' >&2
         report_failure "reset failed after live schema replacement; external recovery archive retained at ${recovery_archive:-unavailable}"
       fi
       exit "$status"
@@ -237,6 +273,26 @@ reset_locked() {
   trap cleanup_reset_failure EXIT
   trap 'exit 1' HUP INT TERM
 
+  # The parent holds the shared lifecycle lock. Arm this worker's containment
+  # before the first Docker inspection so pre-existing services cannot escape.
+  _services_may_be_running=true
+  load_env
+  "$FIREWALL_BIN" apply
+  "$FIREWALL_BIN" verify
+  "$RUNTIME_VERIFY_BIN" pre-start
+  db_state="$(container_running "$DB_CONTAINER")" || fail 'Could not inspect DB container running state.'
+  if [ "$db_state" = true ]; then
+    "$RUNTIME_VERIFY_BIN" post-start db
+  fi
+  web_state="$(container_running "$WEB_CONTAINER")" || fail 'Could not inspect web container running state.'
+  if [ "$web_state" = true ]; then
+    "$RUNTIME_VERIFY_BIN" post-start all
+  fi
+  database_ready
+
+  stage_database="nexolab_reset_stage_${$}_${RANDOM}"
+  [[ "$stage_database" =~ ^[A-Za-z0-9_]+$ ]] || fail 'Could not create a safe reset staging name.'
+
   # Import and validate a new seed database before disrupting the live schema.
   # This prevents a malformed seed or import timeout from leaving the lab empty.
   db_root -e "CREATE DATABASE \`${stage_database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" || fail 'Could not create reset staging schema.'
@@ -244,11 +300,13 @@ reset_locked() {
     mariadb --protocol=socket -uroot "$stage_database" < "${PROJECT_DIR}/mysql/init.sql" || fail 'Could not import the reset seed into the staging schema.'
   verify_seed_state "$stage_database"
 
-  if [ "$(container_running "$WEB_CONTAINER")" = true ]; then
+  web_state="$(container_running "$WEB_CONTAINER")" || fail 'Could not inspect web container running state.'
+  if [ "$web_state" = true ]; then
     web_should_run=true
   fi
 
-  if [ "$(container_running "$WEB_CONTAINER")" = true ]; then
+  web_state="$(container_running "$WEB_CONTAINER")" || fail 'Could not inspect web container running state.'
+  if [ "$web_state" = true ]; then
     stop_web_and_confirm || fail 'Could not stop and confirm web before reset.'
   fi
 
@@ -264,22 +322,24 @@ reset_locked() {
   # Any temporary MariaDB schema is a containment failure until its removal is
   # proven. The recovery archive is outside MariaDB and root-only.
   if ! cleanup_reset_schemas; then
-    if ! stop_web_and_confirm; then
-      report_failure 'reset cleanup failed and web could not be confirmed stopped'
-    fi
-    trap - EXIT HUP INT TERM
-    fail 'Reset cleanup could not remove temporary recovery schemas; web remains stopped.'
+    contain_failed_reset || report_failure 'reset cleanup failed and both services could not be confirmed stopped'
+    fail 'Reset cleanup could not remove temporary recovery schemas; services remain stopped.'
   fi
   # Recreate and validate writable tmpfs paths while web is stopped. No web
   # process may start before this cleanup gate has passed.
   if [ "$web_should_run" = true ]; then
     reset_web_writable_paths || fail 'Could not reset and validate web writable paths while web was stopped.'
-  fi
-  if [ "$web_should_run" = true ]; then
+    "$NGINX_UPSTREAM_BIN" quarantine || fail 'Could not quarantine nginx while web was stopped.'
+    "$FIREWALL_BIN" apply
+    "$FIREWALL_BIN" verify
+    "$RUNTIME_VERIFY_BIN" pre-start
     run_bounded docker start "$WEB_CONTAINER" >/dev/null
+    "$RUNTIME_VERIFY_BIN" post-start all
     if ! verify; then
       fail 'Web start validation failed after reset; web remains stopped.'
     fi
+    "$NGINX_UPSTREAM_BIN" refresh
+    "$NGINX_UPSTREAM_BIN" verify
   fi
   # Delete the operator recovery artifact only after every post-replacement
   # cleanup, web-start validation, and final reset check succeeded.
@@ -317,6 +377,8 @@ reset() {
   # reset and race the parent's verified web-containment path.
   (
     flock -w "$LOCK_TIMEOUT_SECONDS" 9 || fail 'Another reset is active; lock wait expired.'
+    # The parent holds the shared lock for the complete worker lifetime. Its
+    # failure path is armed before the worker can inspect or mutate Docker.
     local status worker_pid deadline timed_out=false
     setsid "$0" _reset-locked &
     worker_pid=$!
@@ -344,10 +406,10 @@ reset() {
     if [ "$status" -eq 0 ]; then
       return 0
     fi
-    if ! stop_web_and_confirm; then
-      report_failure 'reset worker failed and parent could not confirm web stopped'
+    if ! contain_failed_reset; then
+      report_failure 'reset worker failed and parent could not confirm both services stopped'
     else
-      report_failure 'reset worker failed; parent confirmed web stopped'
+      report_failure 'reset worker failed; parent confirmed both services stopped'
     fi
     return "$status"
   ) 9>"$LOCK_FILE"

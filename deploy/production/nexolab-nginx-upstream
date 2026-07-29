@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# Manage nginx's fail-closed upstream for the current running web container.
+set -euo pipefail
+
+readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
+readonly UPSTREAM_FILE="${NEXOLAB_NGINX_UPSTREAM_FILE:-/etc/nginx/nexolab/upstream.conf}"
+readonly QUARANTINE_SOCKET="${NEXOLAB_NGINX_QUARANTINE_SOCKET:-/run/nexolab-quarantine.sock}"
+UPSTREAM_DIR="$(dirname "$UPSTREAM_FILE")"
+readonly UPSTREAM_DIR
+
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+require_root() { [ "${EUID}" -eq 0 ] || fail 'Nginx upstream management must run as root.'; }
+
+valid_ipv4() {
+  local ip="$1" first octet
+  local -a octets
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  IFS='.' read -r -a octets <<<"$ip"
+  [ "${#octets[@]}" -eq 4 ] || return 1
+  for octet in "${octets[@]}"; do (( 10#$octet <= 255 )) || return 1; done
+  first=$((10#${octets[0]}))
+  [ "$ip" != '0.0.0.0' ] && [ "$ip" != '255.255.255.255' ] || return 1
+  (( first != 127 && first < 224 ))
+}
+
+network_id() {
+  local role="$1" id found_role
+  local -a matches=()
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    found_role="$(docker network inspect "$id" --format '{{ index .Labels "com.docker.compose.network" }}')" || fail "Could not inspect Docker network ${id}."
+    [ "$found_role" = "$role" ] && matches+=("$id")
+  done < <(docker network ls -q --filter "label=com.docker.compose.project=${PROJECT}")
+  [ "${#matches[@]}" -eq 1 ] || fail "Expected exactly one project ${role} network."
+  printf '%s\n' "${matches[0]}"
+}
+
+ensure_upstream_directory() {
+  if [ ! -e "$UPSTREAM_DIR" ]; then install -d -o root -g root -m 0755 "$UPSTREAM_DIR" || fail 'Could not create nginx upstream directory.'; fi
+  if ! { [ -d "$UPSTREAM_DIR" ] && [ ! -L "$UPSTREAM_DIR" ]; }; then fail 'Nginx upstream directory is unsafe.'; fi
+  [ "$(stat -c '%u:%g:%a' "$UPSTREAM_DIR")" = '0:0:755' ] || fail 'Nginx upstream directory must be root:root mode 0755.'
+}
+
+write_include() {
+  local contents="$1" temporary=''
+  cleanup_temporary() { [ -z "$temporary" ] || rm -f -- "$temporary"; }
+  trap cleanup_temporary RETURN
+  temporary="$(mktemp "${UPSTREAM_DIR}/.upstream.conf.XXXXXX")" || fail 'Could not create nginx upstream temporary file.'
+  printf '%s' "$contents" >"$temporary" || fail 'Could not write nginx upstream temporary file.'
+  if ! { chown root:root "$temporary" && chmod 0644 "$temporary"; }; then fail 'Could not secure nginx upstream temporary file.'; fi
+  mv -f -- "$temporary" "$UPSTREAM_FILE" || fail 'Could not atomically install nginx upstream file.'
+  temporary=''
+  trap - RETURN
+}
+
+include_for_ip() { printf '# Managed by nexolab-nginx-upstream; do not edit.\nupstream nexolab_web {\n    server %s:80;\n}\n' "$1"; }
+quarantine_include() { printf '# Managed by nexolab-nginx-upstream; do not edit.\nupstream nexolab_web {\n    server unix:%s;\n}\n' "$QUARANTINE_SOCKET"; }
+
+require_safe_include() {
+  if ! { [ -f "$UPSTREAM_FILE" ] && [ ! -L "$UPSTREAM_FILE" ]; }; then fail 'Nginx upstream include is missing or unsafe.'; fi
+  [ "$(stat -c '%u:%g:%a' "$UPSTREAM_FILE")" = '0:0:644' ] || fail 'Nginx upstream include must be root:root mode 0644.'
+}
+
+# Sets SNAPSHOT_ID and SNAPSHOT_IP after proving the complete attachment set.
+running_web_snapshot() {
+  local frontend_id="$1" backend_id="$2" id state network_id ip
+  local -a endpoint_ids=() endpoint_ips=()
+  id="$(docker inspect --format '{{.Id}}' "$WEB_CONTAINER" 2>/dev/null)" || fail "Web container is unavailable: ${WEB_CONTAINER}"
+  [[ "$id" =~ ^[a-f0-9]{64}$ ]] || fail 'Web container did not resolve to a full container ID.'
+  state="$(docker inspect --format '{{.State.Running}}' "$id")" || fail 'Could not inspect the web container state.'
+  [ "$state" = true ] || fail 'Web container must be running before nginx endpoint activation.'
+  while IFS=$'\t' read -r network_id ip; do
+    [ -n "$network_id" ] || continue
+    endpoint_ids+=("$network_id")
+    endpoint_ips+=("$ip")
+  done < <(docker inspect --format '{{range .NetworkSettings.Networks}}{{printf "%s\t%s\n" .NetworkID .IPAddress}}{{end}}' "$id")
+  [ "${#endpoint_ids[@]}" -eq 2 ] || fail 'Web container must have exactly frontend and backend attachments.'
+  for network_id in "${endpoint_ids[@]}"; do
+    [ "$network_id" = "$frontend_id" ] || [ "$network_id" = "$backend_id" ] || fail 'Web container has an unexpected network attachment.'
+  done
+  [ "${endpoint_ids[0]}" != "${endpoint_ids[1]}" ] || fail 'Web container has duplicate network attachments.'
+  local frontend_matches=0
+  SNAPSHOT_IP=''
+  for ((i = 0; i < ${#endpoint_ids[@]}; i++)); do
+    valid_ipv4 "${endpoint_ips[$i]}" || fail 'Web container has an invalid runtime endpoint IP.'
+    if [ "${endpoint_ids[$i]}" = "$frontend_id" ]; then
+      frontend_matches=$((frontend_matches + 1))
+      SNAPSHOT_IP="${endpoint_ips[$i]}"
+    fi
+  done
+  [ "$frontend_matches" -eq 1 ] || fail 'Web container does not have exactly one frontend endpoint.'
+  SNAPSHOT_ID="$id"
+}
+
+current_snapshot_matches() {
+  local frontend_id="$1" backend_id="$2"
+  local expected_id="$3" expected_ip="$4"
+  running_web_snapshot "$frontend_id" "$backend_id"
+  [ "$SNAPSHOT_ID" = "$expected_id" ] && [ "$SNAPSHOT_IP" = "$expected_ip" ]
+}
+
+quarantine() {
+  local state
+  state="$(docker inspect --format '{{.State.Running}}' "$WEB_CONTAINER" 2>/dev/null || printf false)"
+  [ "$state" = false ] || fail 'Web container must be stopped before nginx quarantine.'
+  [ ! -e "$QUARANTINE_SOCKET" ] || fail 'Nginx quarantine socket must be absent.'
+  ensure_upstream_directory
+  write_include "$(quarantine_include)"$'\n'
+  nginx -t || fail 'Nginx configuration validation failed.'
+  systemctl reload nginx || fail 'Nginx reload failed.'
+}
+
+refresh() {
+  local frontend_id backend_id pinned_id pinned_ip
+  frontend_id="$(network_id frontend)"
+  backend_id="$(network_id backend)"
+  [ "$frontend_id" != "$backend_id" ] || fail 'Frontend and backend networks must be distinct.'
+  running_web_snapshot "$frontend_id" "$backend_id"
+  pinned_id="$SNAPSHOT_ID"; pinned_ip="$SNAPSHOT_IP"
+  ensure_upstream_directory
+  write_include "$(include_for_ip "$pinned_ip")"$'\n'
+  nginx -t || fail 'Nginx configuration validation failed.'
+  current_snapshot_matches "$frontend_id" "$backend_id" "$pinned_id" "$pinned_ip" || fail 'Web identity or frontend endpoint changed before nginx reload.'
+  systemctl reload nginx || fail 'Nginx reload failed.'
+  current_snapshot_matches "$frontend_id" "$backend_id" "$pinned_id" "$pinned_ip" || fail 'Web identity or frontend endpoint changed during nginx reload.'
+  require_safe_include
+  include_for_ip "$SNAPSHOT_IP" | cmp -s - "$UPSTREAM_FILE" || fail 'Installed nginx upstream does not equal the current frontend endpoint.'
+}
+
+verify() {
+  local frontend_id backend_id
+  frontend_id="$(network_id frontend)"; backend_id="$(network_id backend)"
+  [ "$frontend_id" != "$backend_id" ] || fail 'Frontend and backend networks must be distinct.'
+  running_web_snapshot "$frontend_id" "$backend_id"
+  ensure_upstream_directory
+  require_safe_include
+  include_for_ip "$SNAPSHOT_IP" | cmp -s - "$UPSTREAM_FILE" || fail 'Nginx upstream include does not match the current frontend endpoint.'
+  nginx -t || fail 'Nginx configuration validation failed.'
+}
+
+main() {
+  [ "$#" -eq 1 ] || { printf 'Usage: %s {quarantine|refresh|verify}\n' "$0" >&2; exit 2; }
+  require_root
+  case "$1" in
+    quarantine) quarantine ;;
+    refresh) refresh ;;
+    verify) verify ;;
+    *) printf 'Usage: %s {quarantine|refresh|verify}\n' "$0" >&2; exit 2 ;;
+  esac
+}
+
+main "$@"

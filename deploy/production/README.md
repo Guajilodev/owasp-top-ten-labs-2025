@@ -8,7 +8,7 @@ containers, installs a fail-closed firewall generation, and only then starts web
 
 | Gate | Check | Why it matters |
 |---|---|---|
-| Docker Engine | `docker version --format '{{.Server.Version}}'` is **28+** | Older engines may expose loopback-published ports to the local L2 network. |
+| Docker Engine | `docker version --format '{{.Server.Version}}'` is **29.3.1+** | Docker 29 does not support the former internal-network loopback publication path. |
 | Cgroups | `docker info --format '{{.CgroupDriver}}'` is `systemd` | Live `memory.swap.max=0`, not Compose metadata, is the swap control. |
 | DB storage | A dedicated mounted filesystem, not `/`, no larger than the approved cap | Its capacity is the database data bound. |
 | I/O device | The configured block device has the same `MAJ:MIN` as that mount | `io.max` must constrain the device actually storing MariaDB. |
@@ -23,6 +23,7 @@ From the reviewed checkout at `/opt/owasp2025`:
 
 ```bash
 install -m 0750 deploy/production/nexolab-firewall /usr/local/sbin/nexolab-firewall
+install -m 0750 deploy/production/nexolab-nginx-upstream /usr/local/sbin/nexolab-nginx-upstream
 install -m 0750 deploy/production/nexolab-reset /usr/local/sbin/nexolab-reset
 install -m 0750 deploy/production/nexolab-storage /usr/local/sbin/nexolab-storage
 install -m 0750 deploy/production/nexolab-runtime-verify /usr/local/sbin/nexolab-runtime-verify
@@ -40,15 +41,22 @@ install -m 0644 deploy/production/nexolab-reset.cron /etc/cron.d/nexolab-reset
 install -m 0644 deploy/production/nexolab-reset.logrotate /etc/logrotate.d/nexolab-reset
 install -m 0644 deploy/production/nexolab-containment.logrotate /etc/logrotate.d/nexolab-containment
 install -m 0644 deploy/production/nexolab.nginx /etc/nginx/sites-available/nexolab.guajilodev.com
+install -d -o root -g root -m 0755 /etc/nginx/nexolab
 ln -sfn /etc/nginx/sites-available/nexolab.guajilodev.com /etc/nginx/sites-enabled/nexolab.guajilodev.com
 systemctl daemon-reload
-nginx -t
-systemctl reload nginx
 ```
 
-The nginx artifact proxies **only** to `127.0.0.1:8082`; it never addresses a
-Docker service name or bridge address. Do not install it until the referenced
-Let's Encrypt certificate exists.
+Do not manually reload the new nginx site before its managed include exists.
+Install a quarantine include first with
+`/usr/local/sbin/nexolab-nginx-upstream quarantine` while web is stopped.
+The normal lifecycle gate keeps that unavailable Unix-socket upstream loaded
+through container start and post-start containment verification. Only then does
+`nexolab-nginx-upstream refresh` discover the **running** web container's current
+`frontend` bridge address, pin its container ID/IP, atomically write
+`/etc/nginx/nexolab/upstream.conf`, run `nginx -t`, re-check the pin, reload, and
+assert that the installed include still equals the current endpoint. Never infer
+an address from a stopped Docker 29 container: it has no usable IP. The site
+never uses a Docker service name, fixed bridge CIDR, or published host port.
 
 ## Secrets: root reads a separate, non-executable file
 
@@ -84,28 +92,42 @@ systemctl enable nexolab-firewall.service nexolab-start.service
 systemctl start nexolab-firewall.service
 systemctl start nexolab-start.service
 /usr/local/sbin/nexolab-firewall verify
-/usr/local/sbin/nexolab-runtime-verify
+/usr/local/sbin/nexolab-runtime-verify post-start all
 /usr/local/sbin/nexolab-reset verify
 ```
 
 Both vulnerable services use `restart: "no"`: Docker therefore cannot start them
 from its restart-policy queue after a reboot. `nexolab-start.service` runs only
 after Docker and the firewall watcher; it creates stopped containers with
-`--no-start`, applies and verifies a complete firewall generation, then starts
-containers. Never replace the gate with a direct `docker compose up`. The
-watcher retains the prior generation if a replacement fails; its systemd unit
-has no stop-time rule removal.
+`--no-start`, applies and verifies a complete firewall generation, verifies the
+unique internal network objects, loads nginx quarantine, starts containers, then
+performs exact post-start attachment/IP/port verification before refreshing the
+nginx upstream. `nexolab-start`, reset, and rollback hold the shared
+`/run/nexolab-lifecycle.lock` for their full mutation and activation window
+(`NEXOLAB_LIFECYCLE_LOCK_FILE` overrides it). Never replace the gate with direct `docker
+compose`, `docker start`, or `docker network connect` commands: those bypass the
+lock and invalidate the containment contract. The watcher retains the prior
+generation if a replacement fails; its systemd unit has no stop-time rule removal.
 
-The firewall allows only host loopback → web TCP/80 and web → DB TCP/3306.
-It drops bridge egress and direct traffic headed toward either lab bridge. This
-is an independent defense in addition to Engine 28's loopback-publish fix.
+Docker 29 production topology has **no published web ports**. Both `frontend`
+and `backend` stay `internal: true`; host nginx reaches web directly through the
+current frontend bridge endpoint. The firewall permits web → DB TCP/3306 and
+drops bridge egress and direct traffic headed toward either lab bridge. Do not
+make a network non-internal or add a temporary published port to recover service.
+
+### Trusted-host boundary
+
+Public ingress reaches the application through host nginx only. The host itself
+is trusted: this change does **not** identity-filter host `OUTPUT` traffic to the
+nginx process, so privileged or local host processes may reach bridge endpoints.
+Do not describe that property as an nginx-only host access control; it is not one.
 
 ## Validate and observe failures
 
 Safe local artifact validation:
 
 ```bash
-scripts/validate-production-containment.sh
+bash scripts/test-production-containment.sh
 ```
 
 This is disposable: it renders Compose, validates topology as structured JSON,
@@ -160,11 +182,12 @@ Before an approved change, save a snapshot on non-root backup storage:
 /usr/local/sbin/nexolab-rollback /mnt/approved-backups/nexolab-YYYYMMDD check
 ```
 
-The snapshot checksums its DB archive, host artifacts, a full application
-release archive, Git revision marker, and exact running web image. Rollback
-loads and tags that saved image, restores the release paths rather than
-overlaying them, restores DB/configuration, and verifies containment before
-reloading nginx:
+The snapshot checksums its DB archive, host artifacts (including the upstream
+helper and generated include), a full application release archive, Git revision
+marker, and exact running web image. Rollback loads and tags that saved image,
+restores the release paths rather than overlaying them, restores DB/configuration,
+materializes stopped containers, rebinds containment, loads nginx quarantine, and
+starts services before refreshing the upstream from the verified running web:
 
 ```bash
 /usr/local/sbin/nexolab-rollback /mnt/approved-backups/nexolab-YYYYMMDD rollback
@@ -173,6 +196,19 @@ reloading nginx:
 Rollback refuses to start without an already verified firewall generation and
 never disables or removes containment. It never runs `compose down`: it creates
 stopped DB/web containers as needed, synchronously rebinds and verifies the
-current bridge policy, and only then starts each service. On a failure, web is
-restarted only after that same synchronous rebind. Investigate the persistent
-failure log before retrying.
+current bridge policy, loads quarantine, starts DB then web, verifies exact
+post-start attachments, and only then refreshes nginx against the running
+frontend address. On a failure, web and DB remain stopped.
+Investigate the persistent failure log before retrying.
+
+## Docker 29 migration gate (manual)
+
+During a maintenance window, stop and confirm web, create and verify a
+pre-change snapshot, install the reviewed artifacts above, then run
+`bash scripts/test-production-containment.sh`. Start only through
+`nexolab-start.service`. Verify Docker 29.3.1, both internal networks, zero web
+port publications, an include IP equal to web's current frontend endpoint,
+`nginx -t`, public HTTPS through host nginx, web → DB TCP/3306, denied external
+DNS/egress, and all existing storage/cgroup gates. Create a new-format snapshot
+only after those checks pass. If any gate fails, keep web stopped and restore the
+secure baseline; do not weaken the internal topology to restore availability.

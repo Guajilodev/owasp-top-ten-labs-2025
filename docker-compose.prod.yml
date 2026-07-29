@@ -1,15 +1,13 @@
 name: owasp2025
 
-# Production topology: host nginx -> 127.0.0.1:8082 -> web -> db.
-# No containerized reverse proxy or public Docker bridge is part of this file.
+# Production topology: host nginx -> web frontend bridge endpoint -> db.
+# Both Compose bridges remain internal; web has no Docker-published port.
 services:
   web:
     build: ./php
     # Rollback injects a snapshot-specific tag here after loading the saved image.
     image: ${NEXOLAB_WEB_IMAGE:-owasp2025-web:latest}
     container_name: owasp-web-2025
-    ports:
-      - "127.0.0.1:8082:80"
     mem_limit: 512m
     memswap_limit: 512m
     # The effective no-swap control is inherited from nexolab-web.slice.
@@ -115,9 +113,8 @@ services:
 networks:
   frontend:
     driver: bridge
-    # Keep web on internal networks only. With Docker Engine >= 26, embedded
-    # DNS therefore serves service names but does not forward external lookups.
-    # The loopback-published port remains reachable by host nginx.
+    # Keep web on internal networks only. Embedded DNS serves service names but
+    # does not forward external lookups; host nginx uses web's bridge endpoint.
     internal: true
   backend:
     driver: bridge

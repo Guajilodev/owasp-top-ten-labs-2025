@@ -9,9 +9,12 @@ readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
 readonly SNAPSHOT_DB="owasp_nexo_db_2025.sql.gz"
 readonly SECRETS_FILE="${NEXOLAB_SECRETS_FILE:-/etc/nexolab/secrets.env}"
 readonly FIREWALL_BIN="${NEXOLAB_FIREWALL_BIN:-/usr/local/sbin/nexolab-firewall}"
+readonly NGINX_UPSTREAM_BIN="${NEXOLAB_NGINX_UPSTREAM_BIN:-/usr/local/sbin/nexolab-nginx-upstream}"
 readonly STORAGE_BIN="${NEXOLAB_STORAGE_BIN:-/usr/local/sbin/nexolab-storage}"
 readonly RUNTIME_VERIFY_BIN="${NEXOLAB_RUNTIME_VERIFY_BIN:-/usr/local/sbin/nexolab-runtime-verify}"
 readonly RESET_BIN="${NEXOLAB_RESET_BIN:-/usr/local/sbin/nexolab-reset}"
+readonly LOCK_FILE="${NEXOLAB_LIFECYCLE_LOCK_FILE:-/run/nexolab-lifecycle.lock}"
+readonly LOCK_TIMEOUT_SECONDS="${NEXOLAB_LIFECYCLE_LOCK_TIMEOUT_SECONDS:-30}"
 
 report_failure() {
   if [ -x /usr/local/sbin/nexolab-report-failure ]; then
@@ -47,7 +50,7 @@ check() {
   for file in \
     project/docker-compose.yml project/docker-compose.prod.yml project/mysql/init.sql project/mysql/my.cnf \
     project/release.tar.gz project/release-revision project/web-image.tar project/web-image-id \
-    host/nexolab.guajilodev.com host/nexolab-reset host/nexolab-firewall \
+     host/nexolab.guajilodev.com host/nexolab-nginx-upstream host/nexolab-upstream.conf host/nexolab-reset host/nexolab-firewall \
      host/nexolab-storage host/nexolab-runtime-verify host/nexolab-firewall.service \
      host/nexolab-start host/nexolab-start.service host/nexolab-report-failure host/nexolab-containment-failure@.service \
     host/nexolab-reset.cron host/nexolab-reset.logrotate host/nexolab.slice \
@@ -61,9 +64,11 @@ check() {
 }
 
 install_snapshot_files() {
-  install -d -m 0755 "$PROJECT_DIR/mysql" /etc/nginx/sites-available /etc/systemd/system /etc/cron.d /etc/logrotate.d /usr/local/sbin
+  install -d -m 0755 "$PROJECT_DIR/mysql" /etc/nginx/sites-available /etc/nginx/nexolab /etc/systemd/system /etc/cron.d /etc/logrotate.d /usr/local/sbin
   restore_release
   cp -a "$BACKUP_DIR/host/nexolab.guajilodev.com" /etc/nginx/sites-available/nexolab.guajilodev.com
+  cp -a "$BACKUP_DIR/host/nexolab-nginx-upstream" /usr/local/sbin/nexolab-nginx-upstream
+  cp -a "$BACKUP_DIR/host/nexolab-upstream.conf" /etc/nginx/nexolab/upstream.conf
   cp -a "$BACKUP_DIR/host/nexolab-reset" /usr/local/sbin/nexolab-reset
   cp -a "$BACKUP_DIR/host/nexolab-firewall" /usr/local/sbin/nexolab-firewall
   cp -a "$BACKUP_DIR/host/nexolab-storage" /usr/local/sbin/nexolab-storage
@@ -82,7 +87,8 @@ install_snapshot_files() {
   install -d -m 0750 /etc/nexolab /etc/systemd/system/nexolab-db.slice.d
   cp -a "$BACKUP_DIR/host/nexolab-storage.env" /etc/nexolab/storage.env
   cp -a "$BACKUP_DIR/host/nexolab-db-storage.conf" /etc/systemd/system/nexolab-db.slice.d/storage.conf
-  chmod 0750 /usr/local/sbin/nexolab-reset /usr/local/sbin/nexolab-firewall /usr/local/sbin/nexolab-storage /usr/local/sbin/nexolab-runtime-verify /usr/local/sbin/nexolab-start /usr/local/sbin/nexolab-report-failure
+  chmod 0750 /usr/local/sbin/nexolab-reset /usr/local/sbin/nexolab-firewall /usr/local/sbin/nexolab-nginx-upstream /usr/local/sbin/nexolab-storage /usr/local/sbin/nexolab-runtime-verify /usr/local/sbin/nexolab-start /usr/local/sbin/nexolab-report-failure
+  chmod 0644 /etc/nginx/nexolab/upstream.conf
   chmod 0644 /etc/cron.d/nexolab-reset /etc/logrotate.d/nexolab-reset /etc/logrotate.d/nexolab-containment
 }
 
@@ -91,6 +97,7 @@ rebind_containment() {
   # and verify synchronously before any container is allowed to start on it.
   "$FIREWALL_BIN" apply
   "$FIREWALL_BIN" verify
+  "$RUNTIME_VERIFY_BIN" pre-start
 }
 
 stop_and_confirm() {
@@ -114,6 +121,7 @@ contain_failed_rollback() {
   local cleanup_failed=false
   stop_and_confirm web "$WEB_CONTAINER" || cleanup_failed=true
   stop_and_confirm db "$DB_CONTAINER" || cleanup_failed=true
+  "$NGINX_UPSTREAM_BIN" quarantine || report_failure 'rollback failure could not restore nginx quarantine'
   [ "$cleanup_failed" = false ]
 }
 
@@ -165,16 +173,12 @@ restore_database() {
 }
 
 rollback() {
-  local rollback_complete=false
+  local rollback_complete=false services_may_be_running=false
   require_root
-  check
-  # Refuse to begin unless containment already exists. Do not disable, remove,
-  # or stop it: every failure path must retain the old restrictive generation.
-  "$FIREWALL_BIN" verify
   leave_web_stopped_on_failure() {
     local status="$?"
     trap - EXIT
-    if [ "$rollback_complete" != true ]; then
+    if [ "$services_may_be_running" = true ] && [ "$rollback_complete" != true ]; then
       # A rollback runtime or recovery failure is fail-closed. Do not attempt a
       # best-effort restart: only an explicitly successful future start gate may
       # expose web again.
@@ -187,6 +191,13 @@ rollback() {
     exit "$status"
   }
   trap leave_web_stopped_on_failure EXIT
+  # Lock, trap, and failure flag are established before the first Docker or
+  # firewall action so pre-existing services are contained on every failure.
+  services_may_be_running=true
+  check
+  "$FIREWALL_BIN" verify
+  stop_and_confirm web "$WEB_CONTAINER"
+  stop_and_confirm db "$DB_CONTAINER"
   bash -n "$BACKUP_DIR/host/nexolab-firewall"
   install_snapshot_files
   systemctl daemon-reload
@@ -196,17 +207,20 @@ rollback() {
   # Do not run `compose down`: it destroys dynamic bridges and creates an
   # asynchronous uncontained interval. Materialize stopped containers, bind
   # rules to their current bridge, verify, then start each workload.
-  NEXOLAB_WEB_IMAGE="$ROLLBACK_WEB_IMAGE" docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" up --no-start --no-build db
+  NEXOLAB_WEB_IMAGE="$ROLLBACK_WEB_IMAGE" docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" up --no-start --no-build db web
   rebind_containment
+  "$NGINX_UPSTREAM_BIN" quarantine
   NEXOLAB_WEB_IMAGE="$ROLLBACK_WEB_IMAGE" docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" start db
+  "$RUNTIME_VERIFY_BIN" post-start db
   wait_for_database
   restore_database
   NEXOLAB_WEB_IMAGE="$ROLLBACK_WEB_IMAGE" docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" up --no-start --no-build --force-recreate --no-deps web
   rebind_containment
   NEXOLAB_WEB_IMAGE="$ROLLBACK_WEB_IMAGE" docker compose -f "$PROJECT_DIR/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" start web
-  systemctl reload nginx
+  "$RUNTIME_VERIFY_BIN" post-start all
   "$RESET_BIN" verify
-  "$RUNTIME_VERIFY_BIN"
+  "$NGINX_UPSTREAM_BIN" refresh
+  "$NGINX_UPSTREAM_BIN" verify
   rollback_complete=true
   printf 'Rollback applied from verified snapshot %s\n' "$BACKUP_DIR"
 }
@@ -215,6 +229,9 @@ rollback() {
 readonly BACKUP_DIR="$1"
 case "$2" in
   check) check ;;
-  rollback) rollback ;;
+  rollback) (
+    flock -w "$LOCK_TIMEOUT_SECONDS" 9 || fail 'Another lifecycle operation is active; lock wait expired.'
+    rollback
+  ) 9>"$LOCK_FILE" ;;
   *) printf 'Usage: %s <snapshot-directory> {check|rollback}\n' "$0" >&2; exit 2 ;;
 esac

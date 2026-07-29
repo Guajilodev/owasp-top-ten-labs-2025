@@ -1,100 +1,135 @@
 #!/usr/bin/env bash
-# Verify host-enforced cgroup controls after the production containers start.
-
+# Verify pre-start Docker topology and post-start host/container containment.
 set -euo pipefail
 
-readonly WEB_CONTAINER="owasp-web-2025"
-readonly DB_CONTAINER="owasp-db-2025"
+readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
+readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
 readonly MIN_DOCKER_MAJOR=28
 
-report_failure() {
-  if [ -x /usr/local/sbin/nexolab-report-failure ]; then
-    /usr/local/sbin/nexolab-report-failure runtime-verify "$*" || true
-  fi
-}
+report_failure() { [ ! -x /usr/local/sbin/nexolab-report-failure ] || /usr/local/sbin/nexolab-report-failure runtime-verify "$*" || true; }
 fail() { report_failure "$*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
-network_id() {
-  local role="$1" id
-  while IFS= read -r id; do
-    [ -n "$id" ] || continue
-    if [ "$(docker network inspect "$id" --format '{{ index .Labels "com.docker.compose.network" }}')" = "$role" ]; then
-      printf '%s\n' "$id"
-      return 0
-    fi
-  done < <(docker network ls -q --filter 'label=com.docker.compose.project=owasp2025')
-  fail "Could not discover the ${role} Compose network."
+valid_ipv4() {
+  local ip="$1" first octet
+  local -a octets
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  IFS='.' read -r -a octets <<<"$ip"; [ "${#octets[@]}" -eq 4 ] || return 1
+  for octet in "${octets[@]}"; do (( 10#$octet <= 255 )) || return 1; done
+  first=$((10#${octets[0]})); [ "$ip" != 0.0.0.0 ] && [ "$ip" != 255.255.255.255 ] && (( first != 127 && first < 224 ))
 }
 
-verify_internal_networks() {
-  local role
+network_id() {
+  local role="$1" id found_role
+  local -a matches=()
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    found_role="$(docker network inspect "$id" --format '{{ index .Labels "com.docker.compose.network" }}')" || fail "Could not inspect Docker network ${id}."
+    [ "$found_role" = "$role" ] && matches+=("$id")
+  done < <(docker network ls -q --filter "label=com.docker.compose.project=${PROJECT}")
+  [ "${#matches[@]}" -eq 1 ] || fail "Expected exactly one project ${role} network."
+  printf '%s\n' "${matches[0]}"
+}
+
+discover_networks() {
+  FRONTEND_ID="$(network_id frontend)"; BACKEND_ID="$(network_id backend)"
+  [ "$FRONTEND_ID" != "$BACKEND_ID" ] || fail 'Frontend and backend networks must be distinct.'
   for role in frontend backend; do
-    [ "$(docker network inspect "$(network_id "$role")" --format '{{.Internal}}')" = true ] || \
-      fail "The ${role} network must be internal to block Docker DNS forwarding."
+    local id
+    [ "$role" = frontend ] && id="$FRONTEND_ID" || id="$BACKEND_ID"
+    [ "$(docker network inspect "$id" --format '{{.Driver}}')" = bridge ] || fail "The ${role} network must use the bridge driver."
+    [ "$(docker network inspect "$id" --format '{{.Internal}}')" = true ] || fail "The ${role} network must be internal to block Docker DNS forwarding."
   done
+}
+
+require_supported_docker() {
+  local docker_major
+  [ "$(docker info --format '{{.CgroupDriver}}')" = systemd ] || fail 'Docker must use the systemd cgroup driver; Compose memswap_limit alone is not accepted.'
+  docker_major="$(docker version --format '{{.Server.Version}}' | cut -d. -f1)"
+  [[ "$docker_major" =~ ^[0-9]+$ && "$docker_major" -ge "$MIN_DOCKER_MAJOR" ]] || fail 'Docker Engine 28+ is required for the supported internal-network containment model.'
+}
+
+verify_container_attachments() {
+  local container="$1"; shift
+  local network_id ip expected
+  local -a expected_ids=("$@") actual_ids=() actual_ips=()
+  [ "$(docker inspect --format '{{.State.Running}}' "$container")" = true ] || fail "$container must be running."
+  while IFS=$'\t' read -r network_id ip; do
+    [ -n "$network_id" ] || continue
+    actual_ids+=("$network_id"); actual_ips+=("$ip")
+  done < <(docker inspect --format '{{range .NetworkSettings.Networks}}{{printf "%s\t%s\n" .NetworkID .IPAddress}}{{end}}' "$container")
+  [ "${#actual_ids[@]}" -eq "${#expected_ids[@]}" ] || fail "$container has an unexpected network attachment set."
+  for expected in "${expected_ids[@]}"; do
+    local count=0 i
+    for ((i = 0; i < ${#actual_ids[@]}; i++)); do
+      [ "${actual_ids[$i]}" = "$expected" ] && count=$((count + 1))
+    done
+    [ "$count" -eq 1 ] || fail "$container does not have exactly the required network attachments."
+  done
+  for ip in "${actual_ips[@]}"; do valid_ipv4 "$ip" || fail "$container has an invalid runtime endpoint IP."; done
+}
+
+verify_no_published_ports() {
+  local container="$1" publish_all ports port_bindings
+  publish_all="$(docker inspect --format '{{.HostConfig.PublishAllPorts}}' "$container")"
+  [ "$publish_all" = false ] || fail "$container must not publish all ports."
+  ports="$(docker inspect --format '{{json .NetworkSettings.Ports}}' "$container")"
+  port_bindings="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container")"
+  python3 - "$ports" "$port_bindings" <<'PY' || fail "$container has a published port binding."
+import json, sys
+ports, bindings = (json.loads(value) for value in sys.argv[1:])
+if any(value is not None for value in ports.values()) or any(value for value in bindings.values()):
+    raise SystemExit(1)
+PY
 }
 
 container_cgroup_path() {
   local container="$1" pid path
-  pid="$(docker inspect --format '{{.State.Pid}}' "$container")"
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || fail "Container is not running: $container"
-  path="$(awk -F: '$1 == "0" { print $3 }' "/proc/${pid}/cgroup")"
-  [ -n "$path" ] || fail "Could not locate the unified cgroup for $container."
+  pid="$(docker inspect --format '{{.State.Pid}}' "$container")"; [[ "$pid" =~ ^[1-9][0-9]*$ ]] || fail "Container is not running: $container"
+  path="$(awk -F: '$1 == "0" { print $3 }' "/proc/${pid}/cgroup")"; [ -n "$path" ] || fail "Could not locate the unified cgroup for $container."
   printf '%s\n' "/sys/fs/cgroup${path}"
 }
 
-verify_container() {
+verify_container_controls() {
   local container="$1" expected_slice="$2" cgroup_path memory_swap
-  [ "$(docker inspect --format '{{.HostConfig.CgroupParent}}' "$container")" = "$expected_slice" ] || \
-    fail "$container is not assigned to $expected_slice."
-  cgroup_path="$(container_cgroup_path "$container")"
-  [[ "$cgroup_path" == *"/${expected_slice}/"* ]] || fail "$container escaped expected cgroup slice: $cgroup_path"
-  memory_swap="$(<"${cgroup_path}/memory.swap.max")"
-  [ "$memory_swap" = "0" ] || fail "$container has effective memory.swap.max=$memory_swap, expected 0."
-  printf 'OK %s: cgroup=%s memory.swap.max=0\n' "$container" "$cgroup_path"
+  [ "$(docker inspect --format '{{.HostConfig.CgroupParent}}' "$container")" = "$expected_slice" ] || fail "$container is not assigned to $expected_slice."
+  cgroup_path="$(container_cgroup_path "$container")"; [[ "$cgroup_path" == *"/${expected_slice}/"* ]] || fail "$container escaped expected cgroup slice: $cgroup_path"
+  memory_swap="$(<"${cgroup_path}/memory.swap.max")"; [ "$memory_swap" = 0 ] || fail "$container has effective memory.swap.max=$memory_swap, expected 0."
 }
 
 verify_db_volume() {
   local volume_name container_source volume_driver volume_type volume_options volume_device mountpoint expected_source source_device_id mount_device_id
-  volume_name="$(docker inspect --format '{{range .Mounts}}{{if and (eq .Destination "/var/lib/mysql") (eq .Type "volume")}}{{.Name}}{{end}}{{end}}' "$DB_CONTAINER")"
-  [ -n "$volume_name" ] || fail 'MariaDB does not have a named volume mounted at /var/lib/mysql.'
-  container_source="$(docker inspect --format '{{range .Mounts}}{{if and (eq .Destination "/var/lib/mysql") (eq .Type "volume")}}{{.Source}}{{end}}{{end}}' "$DB_CONTAINER")"
-  [ -n "$container_source" ] || fail 'MariaDB named-volume mount has no runtime source.'
-  volume_driver="$(docker volume inspect --format '{{.Driver}}' "$volume_name")"
-  volume_type="$(docker volume inspect --format '{{index .Options "type"}}' "$volume_name")"
-  volume_options="$(docker volume inspect --format '{{index .Options "o"}}' "$volume_name")"
-  volume_device="$(docker volume inspect --format '{{index .Options "device"}}' "$volume_name")"
-  [ "$volume_driver" = local ] || fail "MariaDB volume $volume_name must use the local driver."
-  [ "$volume_type" = none ] || fail "MariaDB volume $volume_name is not a bind-backed local volume."
-  [[ ",$volume_options," == *,bind,* ]] || fail "MariaDB volume $volume_name lacks the bind option."
-  expected_source="$(realpath -e "$NEXOLAB_DB_STORAGE_PATH")" || fail 'Approved DB storage path is unavailable.'
-  [ "$(realpath -e "$volume_device")" = "$expected_source" ] || \
-    fail "MariaDB volume device does not resolve to approved storage '$expected_source'."
-  mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' "$volume_name")"
-  mountpoint -q "$mountpoint" || fail "MariaDB volume mountpoint is not mounted: $mountpoint"
-  [ "$(realpath -e "$container_source")" = "$(realpath -e "$mountpoint")" ] || \
-    fail 'MariaDB container mount is not attached to the inspected named-volume mountpoint.'
-  source_device_id="$(findmnt -n -o MAJ:MIN --target "$expected_source")"
-  mount_device_id="$(findmnt -n -o MAJ:MIN --target "$mountpoint")"
-  if [ -z "$source_device_id" ] || [ "$mount_device_id" != "$source_device_id" ]; then
-    fail 'MariaDB named-volume mount is not backed by the approved storage device.'
-  fi
+  volume_name="$(docker inspect --format '{{range .Mounts}}{{if and (eq .Destination "/var/lib/mysql") (eq .Type "volume")}}{{.Name}}{{end}}{{end}}' "$DB_CONTAINER")"; [ -n "$volume_name" ] || fail 'MariaDB does not have a named volume mounted at /var/lib/mysql.'
+  container_source="$(docker inspect --format '{{range .Mounts}}{{if and (eq .Destination "/var/lib/mysql") (eq .Type "volume")}}{{.Source}}{{end}}{{end}}' "$DB_CONTAINER")"; [ -n "$container_source" ] || fail 'MariaDB named-volume mount has no runtime source.'
+  volume_driver="$(docker volume inspect --format '{{.Driver}}' "$volume_name")"; volume_type="$(docker volume inspect --format '{{index .Options "type"}}' "$volume_name")"; volume_options="$(docker volume inspect --format '{{index .Options "o"}}' "$volume_name")"; volume_device="$(docker volume inspect --format '{{index .Options "device"}}' "$volume_name")"
+  if ! { [ "$volume_driver" = local ] && [ "$volume_type" = none ] && [[ ",$volume_options," == *,bind,* ]]; }; then fail "MariaDB volume $volume_name is not an approved bind-backed local volume."; fi
+  expected_source="$(realpath -e "$NEXOLAB_DB_STORAGE_PATH")" || fail 'Approved DB storage path is unavailable.'; [ "$(realpath -e "$volume_device")" = "$expected_source" ] || fail 'MariaDB volume device does not resolve to approved storage.'
+  mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' "$volume_name")"; mountpoint -q "$mountpoint" || fail "MariaDB volume mountpoint is not mounted: $mountpoint"; [ "$(realpath -e "$container_source")" = "$(realpath -e "$mountpoint")" ] || fail 'MariaDB container mount is not attached to the inspected named-volume mountpoint.'
+  source_device_id="$(findmnt -n -o MAJ:MIN --target "$expected_source")"; mount_device_id="$(findmnt -n -o MAJ:MIN --target "$mountpoint")"
+  if ! { [ -n "$source_device_id" ] && [ "$mount_device_id" = "$source_device_id" ]; }; then fail 'MariaDB named-volume mount is not backed by the approved storage device.'; fi
 }
 
-[ "$(docker info --format '{{.CgroupDriver}}')" = "systemd" ] || \
-  fail 'Docker must use the systemd cgroup driver; Compose memswap_limit alone is not accepted.'
-docker_major="$(docker version --format '{{.Server.Version}}' | cut -d. -f1)"
-[[ "$docker_major" =~ ^[0-9]+$ && "$docker_major" -ge "$MIN_DOCKER_MAJOR" ]] || \
-  fail 'Docker Engine 28+ is required: older engines may expose loopback-published ports to the local L2 network.'
-verify_internal_networks
-verify_container "$WEB_CONTAINER" "nexolab-web.slice"
-verify_container "$DB_CONTAINER" "nexolab-db.slice"
+pre_start() { require_supported_docker; discover_networks; }
+post_start() {
+  local target="$1"
+  require_supported_docker; discover_networks
+  verify_container_attachments "$DB_CONTAINER" "$BACKEND_ID"; verify_no_published_ports "$DB_CONTAINER"; verify_container_controls "$DB_CONTAINER" nexolab-db.slice
+  if [ "$target" = all ]; then
+    verify_container_attachments "$WEB_CONTAINER" "$FRONTEND_ID" "$BACKEND_ID"; verify_no_published_ports "$WEB_CONTAINER"; verify_container_controls "$WEB_CONTAINER" nexolab-web.slice
+  fi
+  [ -x /usr/local/sbin/nexolab-storage ] || fail 'Required storage verifier is not installed.'; /usr/local/sbin/nexolab-storage verify
+  [ -r /etc/nexolab/storage.env ] || fail 'Required storage configuration is unavailable.'
+  # shellcheck disable=SC1091
+  . /etc/nexolab/storage.env
+  verify_db_volume
+}
 
-[ -x /usr/local/sbin/nexolab-storage ] || fail 'Required storage verifier is not installed.'
-/usr/local/sbin/nexolab-storage verify
-[ -r /etc/nexolab/storage.env ] || fail 'Required storage configuration is unavailable.'
-# shellcheck disable=SC1091
-. /etc/nexolab/storage.env
-verify_db_volume
-
-printf 'Runtime containment verification passed.\n'
+main() {
+  case "$#:$1:${2:-}" in
+    1:pre-start:) pre_start ;;
+    2:post-start:db) post_start db ;;
+    2:post-start:all) post_start all ;;
+    *) printf 'Usage: %s pre-start | post-start {db|all}\n' "$0" >&2; exit 2 ;;
+  esac
+}
+[ "${BASH_SOURCE[0]}" != "$0" ] || main "$@"

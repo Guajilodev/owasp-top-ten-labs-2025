@@ -1,84 +1,63 @@
 #!/usr/bin/env bash
-# Create stopped containers, install containment, then start the lab.
-# This is invoked by nexolab-start.service at boot. Compose restart policies
-# are deliberately disabled so Docker cannot race this gate after a reboot.
-# Do not replace this with `docker compose up`: the order is the control.
+# Create stopped containers, prove containment, then activate the lab.
 set -euo pipefail
 
 readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:-/opt/owasp2025}"
 readonly COMPOSE_FILE="${NEXOLAB_COMPOSE_FILE:-${PROJECT_DIR}/docker-compose.prod.yml}"
 readonly FIREWALL_BIN="${NEXOLAB_FIREWALL_BIN:-/usr/local/sbin/nexolab-firewall}"
+readonly NGINX_UPSTREAM_BIN="${NEXOLAB_NGINX_UPSTREAM_BIN:-/usr/local/sbin/nexolab-nginx-upstream}"
 readonly RUNTIME_VERIFY_BIN="${NEXOLAB_RUNTIME_VERIFY_BIN:-/usr/local/sbin/nexolab-runtime-verify}"
 readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
 readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
+readonly LOCK_FILE="${NEXOLAB_LIFECYCLE_LOCK_FILE:-/run/nexolab-lifecycle.lock}"
+readonly LOCK_TIMEOUT_SECONDS="${NEXOLAB_LIFECYCLE_LOCK_TIMEOUT_SECONDS:-30}"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 [ "${EUID}" -eq 0 ] || fail 'Start must run as root.'
 [ -f "$COMPOSE_FILE" ] || fail "Production Compose file is missing: $COMPOSE_FILE"
-
 cd "$PROJECT_DIR"
-compose() {
-  docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_DIR" "$@"
+compose() { docker compose -f "$COMPOSE_FILE" --project-directory "$PROJECT_DIR" "$@"; }
+
+stop_and_confirm() {
+  local service="$1" container="$2" state
+  if ! state="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)"; then return 0; fi
+  [ "$state" = false ] && return 0
+  if ! compose stop "$service"; then
+    printf 'ERROR: Compose could not stop %s; attempting direct Docker stop.\n' "$service" >&2
+    docker stop --time 10 "$container" || return 1
+  fi
+  state="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" || return 1
+  [ "$state" = false ]
 }
 
-stop_started_services() {
-  # Stop web before its only dependency. This is synchronous: OnFailure is only
-  # notification and must never be the mechanism that contains a failed start.
-  local service container cleanup_failed=false
-  for service in web db; do
-    if [ "$service" = web ]; then
-      container="$WEB_CONTAINER"
-    else
-      container="$DB_CONTAINER"
-    fi
-    if ! compose stop "$service"; then
-      printf 'ERROR: Compose could not stop %s; attempting direct Docker stop.\n' "$service" >&2
-      if ! docker stop --time 10 "$container"; then
-        printf 'ERROR: Direct Docker stop failed for %s.\n' "$service" >&2
-        cleanup_failed=true
-      fi
-    fi
-    local state
-    if ! state="$(docker inspect --format '{{.State.Running}}' "$container" 2>/dev/null)" || [ "$state" != false ]; then
-      printf 'ERROR: %s could not be confirmed stopped after failed start cleanup.\n' "$service" >&2
-      cleanup_failed=true
-    fi
-  done
-  [ "$cleanup_failed" = false ]
-}
-
-# Globals so the EXIT trap handler can read them (bash nested functions do not
-# inherit `local` variables from their parent function's scope).
 _services_may_be_running=false
 _start_verified=false
-
-start() {
-  _services_may_be_running=false
-  _start_verified=false
-  cleanup_failed_start() {
-    local status="$?"
-    trap - EXIT
-    if [ "$_services_may_be_running" = true ] && [ "$_start_verified" != true ]; then
-      if ! stop_started_services; then
-        printf 'ERROR: Failed-start containment could not be confirmed.\n' >&2
-        exit 1
-      fi
-    fi
-    exit "$status"
-  }
-  trap cleanup_failed_start EXIT
-
-# `up --no-start` creates both dynamic bridges and stopped containers. A failed
-# firewall install therefore cannot start an uncontained web process.
-  compose up --no-start --build
-  "$FIREWALL_BIN" apply
-  "$FIREWALL_BIN" verify
-  # Set this before Compose starts anything: a partial Compose failure is also
-  # a containment failure and must not leave web (or DB) running.
-  _services_may_be_running=true
-  compose start
-  "$RUNTIME_VERIFY_BIN"
-  _start_verified=true
+cleanup_failed_start() {
+  local status="$?" cleanup_failed=false
+  trap - EXIT
+  if [ "$_services_may_be_running" = true ] && [ "$_start_verified" != true ]; then
+    stop_and_confirm web "$WEB_CONTAINER" || cleanup_failed=true
+    stop_and_confirm db "$DB_CONTAINER" || cleanup_failed=true
+    "$NGINX_UPSTREAM_BIN" quarantine || printf 'ERROR: Failed to restore nginx quarantine.\n' >&2
+  fi
+  [ "$cleanup_failed" = false ] || exit 1
+  exit "$status"
 }
 
-start
+start() {
+  flock -w "$LOCK_TIMEOUT_SECONDS" 9 || fail 'Another lifecycle operation is active; lock wait expired.'
+  trap cleanup_failed_start EXIT
+  _services_may_be_running=true
+  stop_and_confirm web "$WEB_CONTAINER" || fail 'Could not stop and confirm pre-existing web.'
+  stop_and_confirm db "$DB_CONTAINER" || fail 'Could not stop and confirm pre-existing DB.'
+  compose up --no-start --build
+  "$FIREWALL_BIN" apply; "$FIREWALL_BIN" verify
+  "$RUNTIME_VERIFY_BIN" pre-start
+  "$NGINX_UPSTREAM_BIN" quarantine
+  compose start db web
+  "$RUNTIME_VERIFY_BIN" post-start all
+  "$NGINX_UPSTREAM_BIN" refresh
+  "$NGINX_UPSTREAM_BIN" verify
+  _start_verified=true
+}
+start 9>"$LOCK_FILE"
