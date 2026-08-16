@@ -67,7 +67,10 @@ open http://localhost:8082
 ```
 
 La base de datos se inicializa automáticamente con datos de ejemplo.
-Docker Compose asigna dinámicamente las redes del proyecto; los servicios se comunican a través de sus nombres (web y db) en lugar de mediante direcciones IP fijas de los contenedores. Consulta la sección [Aislamiento local de Docker](https://github.com/Guajilodev/owasp-top-ten-labs-2025/blob/main/docs/LOCAL_CONTAINMENT.md) antes de utilizar el entorno de pruebas, que es intencionadamente vulnerable, en un equipo local compartido.
+Docker Compose asigna dinámicamente las redes, las interfaces bridge y el volumen
+de base de datos del proyecto; los servicios se comunican a través de sus nombres
+(web y db) en lugar de mediante direcciones IP, interfaces o volúmenes fijos.
+Consulta la sección [Aislamiento local de Docker](https://github.com/Guajilodev/owasp-top-ten-labs-2025/blob/main/docs/LOCAL_CONTAINMENT.md) antes de utilizar el entorno de pruebas, que es intencionadamente vulnerable, en un equipo local compartido.
 
 ### Reset manual
 

@@ -61,8 +61,10 @@ never uses a Docker service name, fixed bridge CIDR, or published host port.
 ## Secrets: root reads a separate, non-executable file
 
 Create `/opt/owasp2025/.env` with mode `0600`, owned by root, for Compose. It
-must contain `NEXOLAB_DB_STORAGE_PATH` and the environment values required by
-the containers. Root automation **does not source it**.
+must set `NEXOLAB_DB_STORAGE_PATH` to a dedicated canonical path (for example
+`/srv/owasp2025-db`), never the legacy database path, along with the environment
+values required by the containers. Compose derives a separate `owasp2025_nexo_db`
+volume for that path. Root automation **does not source it**.
 
 Create `/etc/nexolab/secrets.env` as root-owned mode `0600`. It has exactly
 these four unquoted `KEY=value` records and no shell syntax, comments are

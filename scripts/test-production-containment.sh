@@ -24,18 +24,30 @@ expect_failure_output() {
 }
 
 NEXO_DB_NAME=validation_db NEXO_DB_USER=validation_user NEXO_DB_PASS=validation_password \
-NEXO_DB_ROOT_PASS=validation_root_password NEXOLAB_DB_STORAGE_PATH=/srv/nexolab-db \
-  docker compose -f "${PROJECT_DIR}/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" config --format json >"$temp/compose.json"
-python3 - "$temp/compose.json" <<'PY'
+NEXO_DB_ROOT_PASS=validation_root_password NEXOLAB_DB_STORAGE_PATH=/srv/owasp2025-db \
+  docker compose -f "${PROJECT_DIR}/docker-compose.yml" --project-directory "$PROJECT_DIR" config --format json >"$temp/compose-local.json"
+NEXO_DB_NAME=validation_db NEXO_DB_USER=validation_user NEXO_DB_PASS=validation_password \
+NEXO_DB_ROOT_PASS=validation_root_password NEXOLAB_DB_STORAGE_PATH=/srv/owasp2025-db \
+  docker compose -f "${PROJECT_DIR}/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" config --format json >"$temp/compose-prod.json"
+python3 - "$temp/compose-local.json" "$temp/compose-prod.json" "${PROJECT_DIR}/docker-compose.yml" "${PROJECT_DIR}/docker-compose.prod.yml" <<'PY'
 import json, sys
-config = json.load(open(sys.argv[1], encoding="utf-8"))
-assert config["services"]["web"].get("ports", []) == []
-assert set(config["services"]["web"]["networks"]) == {"frontend", "backend"}
-assert set(config["services"]["db"]["networks"]) == {"backend"}
-assert all(config["networks"][name]["internal"] for name in ("frontend", "backend"))
-assert config["volumes"]["nexo_db"] == {"external": True, "name": "owasp_nexo_db_2025"}
+local, prod = (json.load(open(path, encoding="utf-8")) for path in sys.argv[1:3])
+sources = "\n".join(open(path, encoding="utf-8").read() for path in sys.argv[3:])
+for config in (local, prod):
+    assert all("container_name" not in service for service in config["services"].values())
+    assert all("com.docker.network.bridge.name" not in network.get("driver_opts", {}) for network in config["networks"].values())
+    assert not config["volumes"]["nexo_db"].get("external", False)
+    assert config["volumes"]["nexo_db"]["name"] == "owasp2025_nexo_db"
+    assert config["volumes"]["nexo_db"]["name"] != "owasp_nexo_db_2025"
+assert "com.docker.network.bridge.name" not in sources
+assert "name: owasp_nexo_db_2025" not in sources
+assert prod["services"]["web"].get("ports", []) == []
+assert set(prod["services"]["web"]["networks"]) == {"frontend", "backend"}
+assert set(prod["services"]["db"]["networks"]) == {"backend"}
+assert all(prod["networks"][name]["internal"] for name in ("frontend", "backend"))
+assert prod["volumes"]["nexo_db"]["driver_opts"] == {"type": "none", "o": "bind", "device": "/srv/owasp2025-db"}
 PY
-pass 'rendered topology exposes only loopback web and keeps DB on internal networks'
+pass 'rendered Compose uses project-scoped DB storage and Docker-derived bridge interfaces'
 
 # Reproduce snapshot manifest creation with a real checksum check. The transient
 # output file must not checksum itself.
@@ -448,7 +460,7 @@ touch "$temp/rollback/snapshot/project/web-image.tar" "$temp/rollback/snapshot/p
 for file in nexolab.guajilodev.com nexolab-nginx-upstream nexolab-upstream.conf nexolab-reset nexolab-firewall nexolab-storage nexolab-runtime-verify nexolab-firewall.service nexolab-start nexolab-start.service nexolab-report-failure nexolab-containment-failure@.service nexolab-reset.cron nexolab-reset.logrotate nexolab.slice nexolab-web.slice nexolab-db.slice nexolab-storage.env nexolab-db-storage.conf nexolab-containment.logrotate; do
   : >"$temp/rollback/snapshot/host/$file"
 done
-printf 'SELECT 1;\n' | gzip >"$temp/rollback/snapshot/owasp_nexo_db_2025.sql.gz"
+printf 'SELECT 1;\n' | gzip >"$temp/rollback/snapshot/owasp2025_nexo_db.sql.gz"
 (
   cd "$temp/rollback/snapshot"
   manifest="$(mktemp .manifest.XXXXXX)"

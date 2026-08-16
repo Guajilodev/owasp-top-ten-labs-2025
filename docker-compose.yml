@@ -156,18 +156,9 @@ networks:
   frontend:
     driver: bridge
     internal: true    # nginx <-> web, aislado
-    driver_opts:
-      # Stable host interface for the local containment policy; Docker still
-      # allocates the subnet and container addresses dynamically.
-      com.docker.network.bridge.name: owasp2025-fe
   backend:
     driver: bridge
     internal: true    # web <-> db, aislado
-    driver_opts:
-      # Stable host interface for the local containment policy; Docker still
-      # allocates the subnet and container addresses dynamically.
-      com.docker.network.bridge.name: owasp2025-be
 
 volumes:
   nexo_db:
-    name: owasp_nexo_db_2025

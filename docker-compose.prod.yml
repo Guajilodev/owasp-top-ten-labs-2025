@@ -120,5 +120,10 @@ networks:
 
 volumes:
   nexo_db:
-    external: true
-    name: owasp_nexo_db_2025
+    # Compose derives the volume name from the canonical project name. The
+    # storage path must be dedicated to this deployment, never the legacy DB.
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${NEXOLAB_DB_STORAGE_PATH:-/srv/owasp2025-db}
