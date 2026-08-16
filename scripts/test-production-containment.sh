@@ -552,11 +552,18 @@ cleanup_reset_test() { docker rm -f "$reset_db" "$reset_web" >/dev/null 2>&1 || 
 trap 'cleanup_reset_test; rm -rf "$temp"' EXIT
 docker run -d --name "$reset_db" --memory=768m --memory-swap=768m --cpus=1 --pids-limit=128 \
   -e MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1 mariadb:10.11 >/dev/null
+# mariadb-admin can reach the temporary initialization server. Wait until the
+# entrypoint reports initialization complete, then prove the final server can
+# execute an in-container query.
 for _ in $(seq 1 120); do
-  docker exec "$reset_db" mariadb-admin --protocol=socket -uroot ping --silent >/dev/null 2>&1 && break
+  if docker logs "$reset_db" 2>&1 | grep -Fq 'MariaDB init process done. Ready for start up.' && \
+    docker exec "$reset_db" mariadb --protocol=socket -uroot -Nse 'SELECT 1' >/dev/null 2>&1; then
+    break
+  fi
   sleep 1
 done
-docker exec "$reset_db" mariadb-admin --protocol=socket -uroot ping --silent >/dev/null 2>&1 || fail 'disposable MariaDB did not become ready'
+docker logs "$reset_db" 2>&1 | grep -Fq 'MariaDB init process done. Ready for start up.' && \
+  docker exec "$reset_db" mariadb --protocol=socket -uroot -Nse 'SELECT 1' >/dev/null 2>&1 || fail 'disposable MariaDB final server did not become ready after initialization'
 docker exec "$reset_db" mariadb --protocol=socket -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'reset_root'; CREATE DATABASE validation_db; FLUSH PRIVILEGES;"
 docker exec -i -e MYSQL_PWD=reset_root "$reset_db" mariadb --protocol=socket -uroot validation_db <"${PROJECT_DIR}/mysql/init.sql"
 docker create --name "$reset_web" owasp2025-web:latest >/dev/null
