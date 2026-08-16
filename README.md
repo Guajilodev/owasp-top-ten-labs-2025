@@ -17,7 +17,7 @@
 
 ---
 
-## ¿Que es Nexo?
+## ¿Qué es Nexo?
 
 **Nexo** es una plataforma SaaS ficticia de gestion empresarial. Cada modulo de la aplicación contiene una vulnerabilidad del OWASP Top 10 2025, presentada en un contexto realista y reconocible.
 
