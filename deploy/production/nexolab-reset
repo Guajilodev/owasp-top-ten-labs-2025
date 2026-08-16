@@ -4,8 +4,9 @@
 set -euo pipefail
 
 readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:-/opt/owasp2025}"
-readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
-readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
+readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-${PROJECT}-web-1}"
+readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-${PROJECT}-db-1}"
 readonly UPLOAD_DIR="/var/www/html/a02_admin/uploads"
 readonly A09_LOG_DIR="/var/www/html/a09_actividad/logs"
 readonly LOCK_FILE="${NEXOLAB_LIFECYCLE_LOCK_FILE:-/run/nexolab-lifecycle.lock}"

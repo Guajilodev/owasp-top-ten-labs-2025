@@ -7,7 +7,6 @@ services:
     build: ./php
     # Rollback injects a snapshot-specific tag here after loading the saved image.
     image: ${NEXOLAB_WEB_IMAGE:-owasp2025-web:latest}
-    container_name: owasp-web-2025
     mem_limit: 512m
     memswap_limit: 512m
     # The effective no-swap control is inherited from nexolab-web.slice.
@@ -34,7 +33,7 @@ services:
         max-file: "3"
         compress: "true"
     environment:
-      NEXO_DB_HOST: db
+      NEXO_DB_HOST: ${NEXO_DB_HOST}
       NEXO_DB_NAME: ${NEXO_DB_NAME}
       NEXO_DB_USER: ${NEXO_DB_USER}
       NEXO_DB_PASS: ${NEXO_DB_PASS}
@@ -61,7 +60,6 @@ services:
 
   db:
     image: mariadb:10.11
-    container_name: owasp-db-2025
     mem_limit: 768m
     memswap_limit: 768m
     # The database gets its own systemd slice so the host can enforce both

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
-readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-${PROJECT}-web-1}"
 readonly UPSTREAM_FILE="${NEXOLAB_NGINX_UPSTREAM_FILE:-/etc/nginx/nexolab/upstream.conf}"
 readonly QUARANTINE_SOCKET="${NEXOLAB_NGINX_QUARANTINE_SOCKET:-/run/nexolab-quarantine.sock}"
 UPSTREAM_DIR="$(dirname "$UPSTREAM_FILE")"

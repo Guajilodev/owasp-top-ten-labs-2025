@@ -90,7 +90,7 @@ Si queres exponer el lab a internet (para workshops, clases, CTFs), **SEGUI ESTA
 Internet
     |
     v
-[host nginx :443] ---> [127.0.0.1:8082] ---> [owasp-web-2025:80] ---> [owasp-db-2025:3306]
+[host nginx :443] ---> [127.0.0.1:8082] ---> [web:80] ---> [db:3306]
    TLS + rate limit          loopback only          backend (internal, dynamic)
 ```
 
@@ -134,10 +134,10 @@ Despues del deploy, verifica que el contenedor web este correctamente aislado:
 curl --fail --silent --show-error http://127.0.0.1:8082/ >/dev/null
 
 # db debe seguir accesible solo mediante el nombre de servicio interno
-docker exec owasp-web-2025 php -r 'new PDO("mysql:host=db;dbname=" . getenv("NEXO_DB_NAME"), getenv("NEXO_DB_USER"), getenv("NEXO_DB_PASS")); echo "db-ok", PHP_EOL;'
+docker compose exec -T web php -r 'new PDO("mysql:host=db;dbname=" . getenv("NEXO_DB_NAME"), getenv("NEXO_DB_USER"), getenv("NEXO_DB_PASS")); echo "db-ok", PHP_EOL;'
 
 # La inspeccion no debe mostrar ningun puerto publicado para db
-docker inspect owasp-db-2025 --format '{{json .NetworkSettings.Ports}}'
+docker inspect "$(docker compose ps -q db)" --format '{{json .NetworkSettings.Ports}}'
 ```
 
 ## Estructura del Proyecto

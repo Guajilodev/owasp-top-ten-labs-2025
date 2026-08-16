@@ -194,8 +194,8 @@ NEXOLAB_TEST_ABSENT_CONTAINER=1 NEXOLAB_TEST_DOCKER_LOG="$temp/absent-quarantine
 [ -f "$temp/upstream/etc/nginx/nexolab/upstream.conf" ] || fail 'absent-container quarantine did not write the upstream include'
 grep -Fqx '    server unix:/run/nexolab-quarantine.sock;' "$temp/upstream/etc/nginx/nexolab/upstream.conf" || fail 'absent-container quarantine did not install the unix-socket include'
 [ "$(<"$temp/endpoint.log")" = $'nginx -t\nsystemctl reload nginx' ] || fail 'absent-container quarantine did not validate then reload'
-grep -Fqx 'ps -aq --no-trunc --filter id=owasp-web-2025' "$temp/absent-quarantine-docker.log" || fail 'absent-container quarantine did not prove the ID lookup empty'
-grep -Fqx 'ps -aq --no-trunc --filter name=^/owasp-web-2025$' "$temp/absent-quarantine-docker.log" || fail 'absent-container quarantine did not prove the name lookup empty'
+grep -Fqx 'ps -aq --no-trunc --filter id=owasp2025-web-1' "$temp/absent-quarantine-docker.log" || fail 'absent-container quarantine did not prove the ID lookup empty'
+grep -Fqx 'ps -aq --no-trunc --filter name=^/owasp2025-web-1$' "$temp/absent-quarantine-docker.log" || fail 'absent-container quarantine did not prove the name lookup empty'
 pass 'quarantine accepts a genuinely absent web container before first Compose creation'
 
 # Retain the stopped fixture and make only the mocked start transition expose
@@ -241,7 +241,7 @@ PATH="$temp/mocks/bin:$PATH" NEXOLAB_TEST_STATE="$temp/endpoint-state" bash -c '
   source "$1"
   discover_networks
   [ "$FRONTEND_ID" = "$2" ] && [ "$BACKEND_ID" = "$3" ]
-  verify_container_attachments owasp-web-2025 "$FRONTEND_ID" "$BACKEND_ID"
+  verify_container_attachments owasp2025-web-1 "$FRONTEND_ID" "$BACKEND_ID"
 ' -- "$RUNTIME" 1405359a58840123456789abcdef0123456789abcdef0123456789abcdef0123 f2c1191a730b456789abcdef0123456789abcdef0123456789abcdef01234567
 pass 'runtime verifier canonicalizes short network discovery IDs before exact full attachment checks'
 # The real post-start path reaches web attachment equality after validating the
@@ -249,7 +249,7 @@ pass 'runtime verifier canonicalizes short network discovery IDs before exact fu
 # does not model host cgroups or the production storage mount.
 # shellcheck disable=SC2016 # The child shell expands sourced verifier symbols.
 expect_failure_output "$temp/extra-network.out" env PATH="$temp/mocks/bin:$PATH" NEXOLAB_TEST_STATE="$temp/endpoint-state" NEXOLAB_TEST_EXTRA_BRIDGE=1 bash -c 'source "$1"; verify_container_controls() { :; }; post_start all' -- "$RUNTIME"
-grep -Fq 'owasp-web-2025 has an unexpected network attachment set.' "$temp/extra-network.out" || fail 'post-start verifier did not reject the extra bridge attachment'
+grep -Fq 'owasp2025-web-1 has an unexpected network attachment set.' "$temp/extra-network.out" || fail 'post-start verifier did not reject the extra bridge attachment'
 pass 'runtime post-start verification requires exact web attachments and rejects extra bridge'
 
 prepare_endpoint_state true
@@ -288,12 +288,12 @@ if [ -e "$state/force-compose-stop-web" ] && [ "${1:-}" = compose ]; then
   exit 41
 fi
 case " $* " in
-  *' inspect '*owasp-web-2025*) [ "$(<"$state/web")" = running ] && printf 'true\n' || printf 'false\n' ;;
-  *' inspect '*owasp-db-2025*) [ "$(<"$state/db")" = running ] && printf 'true\n' || printf 'false\n' ;;
+  *' inspect '*owasp2025-web-1*) [ "$(<"$state/web")" = running ] && printf 'true\n' || printf 'false\n' ;;
+  *' inspect '*owasp2025-db-1*) [ "$(<"$state/db")" = running ] && printf 'true\n' || printf 'false\n' ;;
   *' stop web '*) printf 'stopped\n' >"$state/web" ;;
   *' stop db '*) [ "${NEXOLAB_TEST_FAIL_AT:-}" != stop-db ] || exit 42; printf 'stopped\n' >"$state/db" ;;
-  *' stop '*owasp-web-2025*) printf 'stopped\n' >"$state/web" ;;
-  *' stop '*owasp-db-2025*) printf 'stopped\n' >"$state/db" ;;
+  *' stop '*owasp2025-web-1*) printf 'stopped\n' >"$state/web" ;;
+  *' stop '*owasp2025-db-1*) printf 'stopped\n' >"$state/db" ;;
   *' up --no-start --build'*) [ "${NEXOLAB_TEST_FAIL_AT:-}" != up ] || exit 90 ;;
   *' start db web'*) printf 'running\n' >"$state/web"; printf 'running\n' >"$state/db"; [ "${NEXOLAB_TEST_COMPOSE_START_FAIL:-0}" != 1 ] || exit 37 ;;
 esac
@@ -354,8 +354,8 @@ pass 'real start script synchronously stops web and DB after runtime or partial-
 printf 'running\n' >"$temp/start/state/web"; printf 'running\n' >"$temp/start/state/db"; : >"$temp/start/log"
 touch "$temp/start/state/force-compose-stop-web"
 expect_failure env NEXOLAB_TEST_STATE="$temp/start/state" NEXOLAB_TEST_LOG="$temp/start/log" "$temp/start/bin/docker" compose stop web
-env NEXOLAB_TEST_STATE="$temp/start/state" NEXOLAB_TEST_LOG="$temp/start/log" "$temp/start/bin/docker" stop --time 10 owasp-web-2025
-env NEXOLAB_TEST_STATE="$temp/start/state" NEXOLAB_TEST_LOG="$temp/start/log" "$temp/start/bin/docker" stop --time 10 owasp-db-2025
+env NEXOLAB_TEST_STATE="$temp/start/state" NEXOLAB_TEST_LOG="$temp/start/log" "$temp/start/bin/docker" stop --time 10 owasp2025-web-1
+env NEXOLAB_TEST_STATE="$temp/start/state" NEXOLAB_TEST_LOG="$temp/start/log" "$temp/start/bin/docker" stop --time 10 owasp2025-db-1
 [ "$(<"$temp/start/state/web")" = stopped ] || fail 'start direct fallback left web running after a Compose stop failure'
 [ "$(<"$temp/start/state/db")" = stopped ] || fail 'start direct fallback left DB running after a Compose stop failure'
 pass 'real start script surfaces a stop failure, uses direct fallback, and confirms both services stopped'
@@ -511,7 +511,7 @@ expect_failure unshare -Ur --map-root-user env NEXOLAB_TEST_STATE="$temp/rollbac
   NEXOLAB_SECRETS_FILE="$temp/rollback/secrets.env" NEXOLAB_FIREWALL_BIN="$temp/rollback/bin/ok" \
   NEXOLAB_NGINX_UPSTREAM_BIN="$temp/rollback/bin/ok" NEXOLAB_STORAGE_BIN="$temp/rollback/bin/ok" \
   NEXOLAB_RESET_BIN="$temp/rollback/bin/ok" NEXOLAB_RUNTIME_VERIFY_BIN="$temp/rollback/bin/runtime-fail" \
-  NEXOLAB_TEST_WEB_CONTAINER=owasp-web-2025 NEXOLAB_TEST_DB_CONTAINER=owasp-db-2025 \
+  NEXOLAB_TEST_WEB_CONTAINER=owasp2025-web-1 NEXOLAB_TEST_DB_CONTAINER=owasp2025-db-1 \
   "$ROLLBACK" "$temp/rollback/snapshot" rollback
 pass 'real rollback script stops and confirms web and DB after failed runtime verification'
 
@@ -532,7 +532,7 @@ expect_failure unshare -Ur --map-root-user env NEXOLAB_TEST_STATE="$temp/rollbac
   NEXOLAB_NGINX_UPSTREAM_BIN="$temp/rollback/bin/upstream-fail-verify" NEXOLAB_STORAGE_BIN="$temp/rollback/bin/ok" \
   NEXOLAB_RESET_BIN="$temp/rollback/bin/ok" NEXOLAB_RUNTIME_VERIFY_BIN="$temp/rollback/bin/runtime-ok" \
   NEXOLAB_LIFECYCLE_LOCK_FILE="$temp/rollback/lifecycle.lock" \
-  NEXOLAB_TEST_WEB_CONTAINER=owasp-web-2025 NEXOLAB_TEST_DB_CONTAINER=owasp-db-2025 \
+  NEXOLAB_TEST_WEB_CONTAINER=owasp2025-web-1 NEXOLAB_TEST_DB_CONTAINER=owasp2025-db-1 \
   "$ROLLBACK" "$temp/rollback/snapshot" rollback
 python3 - "$temp/rollback/upstream.log" <<'PY'
 import sys
@@ -553,11 +553,9 @@ trap 'cleanup_reset_test; rm -rf "$temp"' EXIT
 docker run -d --name "$reset_db" --memory=768m --memory-swap=768m --cpus=1 --pids-limit=128 \
   -e MARIADB_ALLOW_EMPTY_ROOT_PASSWORD=1 mariadb:10.11 >/dev/null
 for _ in $(seq 1 120); do
-  mariadb_init_log="$(docker logs "$reset_db" 2>&1)" || fail 'could not read disposable MariaDB initialization logs'
-  [[ "$mariadb_init_log" == *'MariaDB init process done'* ]] && break
+  docker exec "$reset_db" mariadb-admin --protocol=socket -uroot ping --silent >/dev/null 2>&1 && break
   sleep 1
 done
-[[ "$mariadb_init_log" == *'MariaDB init process done'* ]] || fail 'disposable MariaDB initialization did not complete'
 docker exec "$reset_db" mariadb-admin --protocol=socket -uroot ping --silent >/dev/null 2>&1 || fail 'disposable MariaDB did not become ready'
 docker exec "$reset_db" mariadb --protocol=socket -uroot -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'reset_root'; CREATE DATABASE validation_db; FLUSH PRIVILEGES;"
 docker exec -i -e MYSQL_PWD=reset_root "$reset_db" mariadb --protocol=socket -uroot validation_db <"${PROJECT_DIR}/mysql/init.sql"

@@ -716,7 +716,7 @@ Renovación automática vía cron:
 - [ ] No hay credenciales en el código — todo en `.env`
 
 ### Por proyecto — VPS pública:
-- [ ] El contenedor `web` no tiene salida a internet (verificar con `docker exec owasp-web-2025 curl https://google.com` — debe fallar)
+- [ ] El contenedor `web` no tiene salida a internet (verificar con `docker compose exec -T web curl https://google.com` — debe fallar)
 - [ ] Nginx responde en HTTPS con certificado válido
 - [ ] El cron de reset corre cada 4 horas y deja log en `/var/log/nexo-reset.log`
 - [ ] El rate limiting de Nginx está activo (verificar con `ab -n 100 -c 10 https://nexo.dominio.com/`)

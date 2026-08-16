@@ -7,8 +7,9 @@ readonly COMPOSE_FILE="${NEXOLAB_COMPOSE_FILE:-${PROJECT_DIR}/docker-compose.pro
 readonly FIREWALL_BIN="${NEXOLAB_FIREWALL_BIN:-/usr/local/sbin/nexolab-firewall}"
 readonly NGINX_UPSTREAM_BIN="${NEXOLAB_NGINX_UPSTREAM_BIN:-/usr/local/sbin/nexolab-nginx-upstream}"
 readonly RUNTIME_VERIFY_BIN="${NEXOLAB_RUNTIME_VERIFY_BIN:-/usr/local/sbin/nexolab-runtime-verify}"
-readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
-readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
+readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-${PROJECT}-web-1}"
+readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-${PROJECT}-db-1}"
 readonly LOCK_FILE="${NEXOLAB_LIFECYCLE_LOCK_FILE:-/run/nexolab-lifecycle.lock}"
 readonly LOCK_TIMEOUT_SECONDS="${NEXOLAB_LIFECYCLE_LOCK_TIMEOUT_SECONDS:-30}"
 

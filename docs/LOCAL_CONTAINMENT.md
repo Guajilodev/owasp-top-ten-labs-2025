@@ -51,7 +51,7 @@ Use only project-local, non-destructive checks. Do not exploit the app or probe
 LAN, Internet, or other Docker workloads.
 
 ```bash
-docker exec owasp-nginx-2025 wget -qO- http://web/ >/dev/null
-docker exec owasp-web-2025 php -r 'new PDO("mysql:host=db;dbname=" . getenv("NEXO_DB_NAME"), getenv("NEXO_DB_USER"), getenv("NEXO_DB_PASS")); echo "db-ok\n";'
+docker compose exec -T nginx wget -qO- http://web/ >/dev/null
+docker compose exec -T web php -r 'new PDO("mysql:host=db;dbname=" . getenv("NEXO_DB_NAME"), getenv("NEXO_DB_USER"), getenv("NEXO_DB_PASS")); echo "db-ok\n";'
 curl --fail --silent --show-error http://127.0.0.1:8082/ >/dev/null
 ```

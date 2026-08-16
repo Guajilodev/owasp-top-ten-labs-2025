@@ -9,7 +9,6 @@
 services:
   nginx:
     image: nginx:alpine
-    container_name: owasp-nginx-2025
     ports:
       # En desarrollo: usar 8082 (override agrega este)
       # En producción: descomentar estos y eliminar el override
@@ -42,7 +41,6 @@ services:
 
   web:
     build: ./php
-    container_name: owasp-web-2025
     # Compose-enforced containment limits. memswap_limit equal to mem_limit
     # disables swap-backed growth for this intentionally vulnerable service.
     mem_limit: 512m
@@ -63,7 +61,7 @@ services:
       - /var/www/html/a09_actividad/logs:size=20m,mode=1777
       - /var/log/nexo:size=20m,mode=0775,uid=33,gid=33
     environment:
-      - NEXO_DB_HOST=db
+      - NEXO_DB_HOST=${NEXO_DB_HOST}
       - NEXO_DB_NAME=${NEXO_DB_NAME}
       - NEXO_DB_USER=${NEXO_DB_USER}
       - NEXO_DB_PASS=${NEXO_DB_PASS}
@@ -96,7 +94,6 @@ services:
 
   db:
     image: mariadb:10.11
-    container_name: owasp-db-2025
     # Bound database work that a compromised web service can induce while
     # leaving enough headroom for MariaDB's 128 MiB InnoDB buffer pool.
     mem_limit: 768m
@@ -145,7 +142,6 @@ services:
 
   certbot:
     image: certbot/certbot
-    container_name: owasp-certbot-2025
     volumes:
       - ./certbot/www:/var/www/certbot
       - ./certbot/conf:/etc/letsencrypt

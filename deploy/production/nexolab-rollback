@@ -4,8 +4,9 @@
 set -euo pipefail
 
 readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:-/opt/owasp2025}"
-readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
-readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
+readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
+readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-${PROJECT}-db-1}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-${PROJECT}-web-1}"
 readonly SNAPSHOT_DB="owasp_nexo_db_2025.sql.gz"
 readonly SECRETS_FILE="${NEXOLAB_SECRETS_FILE:-/etc/nexolab/secrets.env}"
 readonly FIREWALL_BIN="${NEXOLAB_FIREWALL_BIN:-/usr/local/sbin/nexolab-firewall}"

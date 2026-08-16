@@ -3,8 +3,8 @@
 set -euo pipefail
 
 readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
-readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-owasp-web-2025}"
-readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-owasp-db-2025}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-${PROJECT}-web-1}"
+readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-${PROJECT}-db-1}"
 readonly MIN_DOCKER_MAJOR=28
 
 report_failure() { [ ! -x /usr/local/sbin/nexolab-report-failure ] || /usr/local/sbin/nexolab-report-failure runtime-verify "$*" || true; }

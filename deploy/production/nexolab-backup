@@ -3,8 +3,10 @@
 
 set -euo pipefail
 
-readonly PROJECT_DIR="/opt/owasp2025"
-readonly DB_CONTAINER="owasp-db-2025"
+readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:-/opt/owasp2025}"
+readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
+readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-${PROJECT}-db-1}"
+readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-${PROJECT}-web-1}"
 readonly DB_ARCHIVE="owasp_nexo_db_2025.sql.gz"
 readonly SECRETS_FILE="${NEXOLAB_SECRETS_FILE:-/etc/nexolab/secrets.env}"
 
@@ -54,7 +56,7 @@ create() {
     mariadb-dump --protocol=socket -uroot --single-transaction --routines --events --databases "$NEXO_DB_NAME" | gzip -9 >"${staging}/${DB_ARCHIVE}"
   gzip -t "${staging}/${DB_ARCHIVE}"
 
-  web_image_id="$(docker inspect --format '{{.Image}}' owasp-web-2025)"
+  web_image_id="$(docker inspect --format '{{.Image}}' "$WEB_CONTAINER")"
   [[ "$web_image_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail 'Could not determine the running web image digest.'
   docker image save "$web_image_id" -o "$staging/project/web-image.tar"
   printf '%s\n' "$web_image_id" >"$staging/project/web-image-id"
