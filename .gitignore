@@ -25,3 +25,6 @@ mysql/data/
 # OS
 .DS_Store
 Thumbs.db
+
+# Registros locales generados por herramientas de IA
+.atl/

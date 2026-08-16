@@ -190,6 +190,10 @@ Bajo las siguientes condiciones:
 - **Atribucion** — Debes dar credito apropiado y linkear a la licencia
 - **ShareAlike** — Si modificas el material, debes distribuirlo bajo la misma licencia
 
+## Agradecimientos
+
+El proyecto recibió asistencia de flujo de trabajo y herramientas de Gentleman Programming y Gentle AI. Este reconocimiento se limita a esa asistencia y no implica patrocinio, respaldo, afiliación ni propiedad del proyecto por parte de dichas organizaciones.
+
 ## Disclaimer Legal
 
 Este software se proporciona "tal cual", sin garantias de ningun tipo. El autor no es responsable de:
