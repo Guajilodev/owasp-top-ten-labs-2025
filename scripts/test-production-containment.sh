@@ -264,6 +264,57 @@ expect_failure_output "$temp/extra-network.out" env PATH="$temp/mocks/bin:$PATH"
 grep -Fq 'owasp2025-web-1 has an unexpected network attachment set.' "$temp/extra-network.out" || fail 'post-start verifier did not reject the extra bridge attachment'
 pass 'runtime post-start verification requires exact web attachments and rejects extra bridge'
 
+# Swap containment lives on the whole cgroup v2 ancestor chain: a descendant can
+# never exceed the strictest limit above it. A systemd daemon-reload can revert
+# the container scope leaf to `max` while the slice still enforces 0, so reading
+# the leaf alone reports a breach that never happened and stops production.
+mkdir -p "$temp/controls/bin" "$temp/controls/proc/4242"
+readonly CONTROLS_LEAF="$temp/controls/cgroup/nexolab.slice/nexolab-db.slice/docker-abc.scope"
+cat >"$temp/controls/bin/docker" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${3:-}" in
+  *'.HostConfig.CgroupParent'*) printf '%s\n' "${NEXOLAB_TEST_CGROUP_PARENT:-nexolab-db.slice}" ;;
+  *'.State.Pid'*) printf '4242\n' ;;
+  *) exit 1 ;;
+esac
+SH
+chmod 0755 "$temp/controls/bin/docker"
+printf '0::/nexolab.slice/nexolab-db.slice/docker-abc.scope\n' >"$temp/controls/proc/4242/cgroup"
+write_swap_chain() {
+  local slice_limit="$1" leaf_limit="$2" node="$CONTROLS_LEAF"
+  rm -rf "$temp/controls/cgroup"
+  mkdir -p "$CONTROLS_LEAF"
+  printf '%s\n' "$leaf_limit" >"${CONTROLS_LEAF}/memory.swap.max"
+  while node="${node%/*}"; [ "$node" != "$temp/controls/cgroup" ]; do
+    printf '%s\n' "$slice_limit" >"${node}/memory.swap.max"
+  done
+}
+# shellcheck disable=SC2016,SC2120 # The child shell expands sourced verifier symbols; callers add env overrides only when a case needs one.
+run_controls() {
+  env PATH="$temp/controls/bin:$PATH" NEXOLAB_CGROUP_ROOT="$temp/controls/cgroup" \
+    NEXOLAB_PROC_ROOT="$temp/controls/proc" "$@" \
+    bash -c 'source "$1"; verify_container_controls owasp2025-db-1 nexolab-db.slice' -- "$RUNTIME"
+}
+write_swap_chain 0 0
+run_controls || fail 'runtime verifier rejected a fully enforced swap chain'
+write_swap_chain 0 max
+run_controls || fail 'runtime verifier read the leaf alone and rejected a slice-enforced swap limit'
+pass 'runtime verifier accepts a drifted scope leaf while an ancestor slice still enforces swap=0'
+
+write_swap_chain max max
+expect_failure_output "$temp/controls/unbounded.out" run_controls
+grep -Fq 'owasp2025-db-1 has effective memory.swap.max=max, expected 0.' "$temp/controls/unbounded.out" ||
+  fail 'runtime verifier did not reject an unbounded swap chain'
+write_swap_chain 0 max
+rm -f "${CONTROLS_LEAF%/*}/memory.swap.max"
+expect_failure run_controls
+write_swap_chain 0 not-a-limit
+expect_failure run_controls
+write_swap_chain 0 0
+expect_failure run_controls NEXOLAB_TEST_CGROUP_PARENT=nexolab-web.slice
+pass 'runtime verifier fails closed on an unbounded, unreadable, malformed, or misassigned swap chain'
+
 prepare_endpoint_state true
 NEXOLAB_TEST_MALFORMED_NETWORK_ID=1 expect_failure run_upstream refresh
 

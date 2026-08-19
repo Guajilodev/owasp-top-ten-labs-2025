@@ -6,6 +6,9 @@ readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
 readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-${PROJECT}-web-1}"
 readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-${PROJECT}-db-1}"
 readonly MIN_DOCKER_MAJOR=28
+CGROUP_ROOT="${NEXOLAB_CGROUP_ROOT:-/sys/fs/cgroup}"
+readonly CGROUP_ROOT="${CGROUP_ROOT%/}"
+readonly PROC_ROOT="${NEXOLAB_PROC_ROOT:-/proc}"
 
 report_failure() { [ ! -x /usr/local/sbin/nexolab-report-failure ] || /usr/local/sbin/nexolab-report-failure runtime-verify "$*" || true; }
 fail() { report_failure "$*"; printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -88,15 +91,37 @@ PY
 container_cgroup_path() {
   local container="$1" pid path
   pid="$(docker inspect --format '{{.State.Pid}}' "$container")"; [[ "$pid" =~ ^[1-9][0-9]*$ ]] || fail "Container is not running: $container"
-  path="$(awk -F: '$1 == "0" { print $3 }' "/proc/${pid}/cgroup")"; [ -n "$path" ] || fail "Could not locate the unified cgroup for $container."
-  printf '%s\n' "/sys/fs/cgroup${path}"
+  path="$(awk -F: '$1 == "0" { print $3 }' "${PROC_ROOT}/${pid}/cgroup")"; [ -n "$path" ] || fail "Could not locate the unified cgroup for $container."
+  printf '%s\n' "${CGROUP_ROOT}${path}"
+}
+
+# cgroup v2 enforces memory.swap.max down the whole hierarchy: a descendant can
+# never exceed the strictest limit on its ancestor chain, so the effective limit
+# is that minimum, not the value on the container leaf. A systemd daemon-reload
+# reverts a container scope leaf that carries no matching systemd property back
+# to `max` while the owning slice keeps enforcing 0; reading the leaf alone turns
+# that harmless drift into a containment failure and stops the lab.
+effective_memory_swap_max() {
+  local leaf="$1" node value effective=max
+  [[ "$leaf" == "${CGROUP_ROOT}/"* ]] || fail "Cgroup path is outside ${CGROUP_ROOT}: $leaf"
+  node="$leaf"
+  while [ "$node" != "$CGROUP_ROOT" ]; do
+    [ -r "${node}/memory.swap.max" ] || fail "Could not read the swap limit of ${node}."
+    value="$(<"${node}/memory.swap.max")"
+    [ "$value" = max ] || [[ "$value" =~ ^[0-9]+$ ]] || fail "Unsupported swap limit at ${node}: ${value}"
+    if [ "$value" != max ] && { [ "$effective" = max ] || [ "$value" -lt "$effective" ]; }; then
+      effective="$value"
+    fi
+    node="${node%/*}"
+  done
+  printf '%s\n' "$effective"
 }
 
 verify_container_controls() {
   local container="$1" expected_slice="$2" cgroup_path memory_swap
   [ "$(docker inspect --format '{{.HostConfig.CgroupParent}}' "$container")" = "$expected_slice" ] || fail "$container is not assigned to $expected_slice."
   cgroup_path="$(container_cgroup_path "$container")"; [[ "$cgroup_path" == *"/${expected_slice}/"* ]] || fail "$container escaped expected cgroup slice: $cgroup_path"
-  memory_swap="$(<"${cgroup_path}/memory.swap.max")"; [ "$memory_swap" = 0 ] || fail "$container has effective memory.swap.max=$memory_swap, expected 0."
+  memory_swap="$(effective_memory_swap_max "$cgroup_path")"; [ "$memory_swap" = 0 ] || fail "$container has effective memory.swap.max=$memory_swap, expected 0."
 }
 
 verify_db_volume() {
