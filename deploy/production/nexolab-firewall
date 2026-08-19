@@ -5,7 +5,7 @@
 
 set -euo pipefail
 
-readonly PROJECT="owasp2025"
+readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
 readonly TAG="nexolab-containment"
 readonly MIN_DOCKER_MAJOR=28
 readonly STATE_DIR="${NEXOLAB_FIREWALL_STATE_DIR:-/run/nexolab-firewall}"
