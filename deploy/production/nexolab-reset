@@ -251,26 +251,42 @@ contain_failed_reset() {
   [ "$cleanup_failed" = false ]
 }
 
-reset_locked() {
-  local db_state web_state web_should_run=false reset_succeeded=false live_replaced=false stage_database='' recovery_archive=''
-  local _services_may_be_running=false
+# Bash 5.2 discards a function's local scope before it runs the EXIT trap, so
+# every value the failure path reads lives at script scope. As locals they were
+# unbound under `set -u`: the handler aborted before it could stop the services,
+# prove temporary-schema removal, or warn that a live schema had been replaced.
+# The defaults below are the fail-closed reading of unknown state.
+_services_may_be_running=false
+reset_succeeded=false
+live_replaced=false
+stage_database=''
+recovery_archive=''
 
-  cleanup_reset_failure() {
-    local status="$?"
-    trap - EXIT HUP INT TERM
-    if [ "$_services_may_be_running" = true ] && [ "$reset_succeeded" != true ]; then
-      contain_failed_reset || report_failure 'reset failed and containment could not confirm both services stopped'
-      if ! cleanup_reset_schemas; then
-        report_failure 'reset failure could not prove removal of temporary recovery or staging schemas'
-      fi
-      if [ "$live_replaced" = true ]; then
-        printf 'ERROR: reset failed after live schema replacement; services remain stopped pending operator recovery.\n' >&2
-        report_failure "reset failed after live schema replacement; external recovery archive retained at ${recovery_archive:-unavailable}"
-      fi
-      exit "$status"
+cleanup_reset_failure() {
+  local status="$?"
+  trap - EXIT HUP INT TERM
+  if [ "${_services_may_be_running:-true}" = true ] && [ "${reset_succeeded:-false}" != true ]; then
+    contain_failed_reset || report_failure 'reset failed and containment could not confirm both services stopped'
+    if ! cleanup_reset_schemas; then
+      report_failure 'reset failure could not prove removal of temporary recovery or staging schemas'
+    fi
+    if [ "${live_replaced:-true}" = true ]; then
+      printf 'ERROR: reset failed after live schema replacement; services remain stopped pending operator recovery.\n' >&2
+      report_failure "reset failed after live schema replacement; external recovery archive retained at ${recovery_archive:-unavailable}"
     fi
     exit "$status"
-  }
+  fi
+  exit "$status"
+}
+
+reset_locked() {
+  local db_state web_state web_should_run=false
+  _services_may_be_running=false
+  reset_succeeded=false
+  live_replaced=false
+  stage_database=''
+  recovery_archive=''
+
   trap cleanup_reset_failure EXIT
   trap 'exit 1' HUP INT TERM
 

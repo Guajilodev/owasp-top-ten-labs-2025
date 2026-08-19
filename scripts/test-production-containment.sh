@@ -848,5 +848,63 @@ sleep 4
 [ "$(docker inspect --format '{{.State.Running}}' "$reset_web")" = false ] || fail 'outer timeout did not keep web stopped'
 pass 'outer timeout TERM/KILLs the full worker process group with no surviving Docker descendant'
 
+ensure_reset_db
+docker start "$reset_web" >/dev/null
+# The worker owns the first containment pass; the parent is only its backstop.
+# Bash unwinds a function's local scope before running the EXIT trap, so the
+# failure path must read globals. As locals they were unbound under `set -u`,
+# which aborted the worker's own containment, schema cleanup, and post-
+# replacement operator warning before any of them could run.
+cat >"$temp/reset/bin/runtime-fail" <<'SH'
+#!/usr/bin/env bash
+printf 'ERROR: injected runtime verification failure\n' >&2
+exit 1
+SH
+cat >"$temp/reset/bin/upstream-record" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NEXOLAB_TEST_STATE/worker-upstream.log"
+SH
+chmod 0755 "$temp/reset/bin/runtime-fail" "$temp/reset/bin/upstream-record"
+: >"$temp/reset/worker-upstream.log"
+expect_failure_output "$temp/reset/worker-containment.out" \
+  unshare -Ur --map-root-user env "${reset_env[@]}" \
+    NEXOLAB_RUNTIME_VERIFY_BIN="$temp/reset/bin/runtime-fail" \
+    NEXOLAB_NGINX_UPSTREAM_BIN="$temp/reset/bin/upstream-record" \
+    "$RESET" _reset-locked
+grep -Fq 'unbound variable' "$temp/reset/worker-containment.out" &&
+  fail 'reset worker failure path aborted on an unbound containment flag'
+grep -Fqx 'quarantine' "$temp/reset/worker-upstream.log" ||
+  fail 'reset worker failure path did not quarantine nginx on its own'
+[ "$(docker inspect --format '{{.State.Running}}' "$reset_web")" = false ] ||
+  fail 'reset worker failure path left web running'
+[ "$(docker inspect --format '{{.State.Running}}' "$reset_db")" = false ] ||
+  fail 'reset worker failure path left the DB running'
+pass 'reset worker contains and quarantines on its own failure path without the parent backstop'
+ensure_reset_db
+
+# Bash 5.2 discards a function's local scope before running its EXIT trap, while
+# 5.1 keeps it visible. Production runs 5.2, so a failure path built on locals
+# read unbound state, aborted under `set -u`, and silently skipped containment
+# and schema cleanup on every failed reset -- invisible on a 5.1 developer box.
+# Drive the handler with no function frame so the contract holds on either.
+: >"$temp/reset/trap-frame.log"
+# shellcheck disable=SC2016 # The child shell expands sourced reset symbols.
+unshare -Ur --map-root-user env "${reset_env[@]}" bash -c '
+  log="$2"
+  exit() { return 0; }
+  source "$1" >/dev/null 2>&1
+  unset -f exit
+  contain_failed_reset() { printf "contained\n" >>"$log"; }
+  cleanup_reset_schemas() { printf "schemas-cleaned\n" >>"$log"; }
+  report_failure() { printf "reported: %s\n" "$*" >>"$log"; }
+  _services_may_be_running=true
+  ( cleanup_reset_failure )
+' -- "$RESET" "$temp/reset/trap-frame.log" >/dev/null 2>&1 || true
+grep -Fqx 'contained' "$temp/reset/trap-frame.log" ||
+  fail 'reset failure handler did not contain services when run without its function frame'
+grep -Fqx 'schemas-cleaned' "$temp/reset/trap-frame.log" ||
+  fail 'reset failure handler did not prove temporary-schema removal without its function frame'
+pass 'reset failure handler contains and cleans schemas after bash discards the local frame'
+
 printf 'Production-only manual gates: host firewall, cgroup/storage/device topology, TLS, public HTTPS, and real Docker DNS/egress.\n'
 printf 'RESULT: %d containment scenarios passed\n' "$passed"
