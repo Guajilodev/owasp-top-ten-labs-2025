@@ -64,23 +64,31 @@ $prefs->username = 'guest';
 $cookieRaw = '';
 $cookieDecoded = '';
 $isEscalated = false;
+$cookieMalformed = false;
 
 if (isset($_COOKIE['NEXO_PREFS'])) {
     $cookieRaw = $_COOKIE['NEXO_PREFS'];
     
-    try {
-        // ⚠️ VULNERABLE: Deserialización sin verificación de integridad
-        $decoded = base64_decode($cookieRaw);
-        $cookieDecoded = $decoded;
-        $prefs = unserialize($decoded);
-        
+    // ⚠️ VULNERABLE: Deserialización sin verificación de integridad
+    $decoded = base64_decode($cookieRaw, true);
+    $cookieDecoded = $decoded === false ? '' : $decoded;
+
+    // unserialize() NO lanza excepciones: ante datos corruptos emite un
+    // warning y devuelve false. Por eso se valida el valor de retorno.
+    $restored = $decoded === false ? false : @unserialize($decoded);
+
+    if ($restored instanceof UserPrefs) {
+        $prefs = $restored;
+
         // Verificar si escaló privilegios
         if ($prefs->is_admin === true && $prefs->username !== 'admin') {
             $isEscalated = true;
         }
-    } catch (Exception $e) {
-        // Cookie inválida, usar defaults
+    } else {
+        // Cookie inválida o manipulada al punto de romper el formato: usar defaults
+        $cookieMalformed = true;
         $prefs = new UserPrefs();
+        $prefs->username = 'guest';
     }
 }
 
@@ -125,6 +133,18 @@ include __DIR__ . '/../shared/header.php';
     <div class="alert alert-success">Preferencias guardadas. Revisá la cookie.</div>
     <?php endif; ?>
     
+    <?php if ($cookieMalformed): ?>
+    <div class="alert alert-warning">
+        <h5>⚠️ Cookie inválida</h5>
+        <p class="mb-0">
+            El contenido de <code>NEXO_PREFS</code> no es un objeto serializado válido, así que se
+            usaron los valores por defecto. Al editar la cadena acordate de ajustar el largo de
+            cada string (por ejemplo <code>s:5:"alice"</code>) y de re-encodear en base64 sin
+            saltos de línea.
+        </p>
+    </div>
+    <?php endif; ?>
+
     <?php if ($isEscalated): ?>
     <div class="alert alert-danger">
         <h5>🚨 ¡Escalación de privilegios exitosa!</h5>
