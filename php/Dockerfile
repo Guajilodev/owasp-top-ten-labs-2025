@@ -41,9 +41,10 @@ log_errors = On\n\
 error_log = /var/log/nexo/php_errors.log\n\
 ' > /usr/local/etc/php/conf.d/nexo.ini
 
-# Crear directorios necesarios
-RUN mkdir -p /var/log/nexo && \
-    chown www-data:www-data /var/log/nexo
+# Create writable mountpoints in the image before the production root filesystem
+# becomes read-only; Docker cannot create them at container startup.
+RUN mkdir -p /var/log/nexo /var/www/html/a02_admin/uploads /var/www/html/a09_actividad/logs && \
+    chown www-data:www-data /var/log/nexo /var/www/html/a02_admin/uploads /var/www/html/a09_actividad/logs
 
 # DocumentRoot
 WORKDIR /var/www/html

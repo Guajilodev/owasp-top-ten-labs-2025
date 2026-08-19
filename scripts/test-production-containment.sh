@@ -36,18 +36,31 @@ sources = "\n".join(open(path, encoding="utf-8").read() for path in sys.argv[3:]
 for config in (local, prod):
     assert all("container_name" not in service for service in config["services"].values())
     assert all("com.docker.network.bridge.name" not in network.get("driver_opts", {}) for network in config["networks"].values())
-    assert not config["volumes"]["nexo_db"].get("external", False)
     assert config["volumes"]["nexo_db"]["name"] == "owasp2025_nexo_db"
-    assert config["volumes"]["nexo_db"]["name"] != "owasp_nexo_db_2025"
+# The local file lets Compose own its throwaway volume. Production adopts the
+# volume nexolab-storage provisioned against containment-approved storage, so
+# Compose can never create an empty one and orphan the real database. The
+# provisioned name is deployment configuration, never a literal in the file.
+assert not local["volumes"]["nexo_db"].get("external", False)
+assert prod["volumes"]["nexo_db"]["external"] is True
 assert "com.docker.network.bridge.name" not in sources
 assert "name: owasp_nexo_db_2025" not in sources
 assert prod["services"]["web"].get("ports", []) == []
 assert set(prod["services"]["web"]["networks"]) == {"frontend", "backend"}
 assert set(prod["services"]["db"]["networks"]) == {"backend"}
 assert all(prod["networks"][name]["internal"] for name in ("frontend", "backend"))
-assert prod["volumes"]["nexo_db"]["driver_opts"] == {"type": "none", "o": "bind", "device": "/srv/owasp2025-db"}
+assert "driver_opts" not in prod["volumes"]["nexo_db"]
 PY
-pass 'rendered Compose uses project-scoped DB storage and Docker-derived bridge interfaces'
+NEXO_DB_NAME=validation_db NEXO_DB_USER=validation_user NEXO_DB_PASS=validation_password \
+NEXO_DB_ROOT_PASS=validation_root_password NEXOLAB_DB_VOLUME_NAME=provisioned_db_volume \
+  docker compose -f "${PROJECT_DIR}/docker-compose.prod.yml" --project-directory "$PROJECT_DIR" config --format json >"$temp/compose-prod-pinned.json"
+python3 - "$temp/compose-prod-pinned.json" <<'PY'
+import json, sys
+pinned = json.load(open(sys.argv[1], encoding="utf-8"))
+assert pinned["volumes"]["nexo_db"]["name"] == "provisioned_db_volume"
+assert pinned["volumes"]["nexo_db"]["external"] is True
+PY
+pass 'rendered Compose adopts the deployment-pinned DB volume and Docker-derived bridge interfaces'
 
 # Reproduce snapshot manifest creation with a real checksum check. The transient
 # output file must not checksum itself.

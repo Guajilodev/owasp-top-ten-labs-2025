@@ -120,10 +120,11 @@ networks:
 
 volumes:
   nexo_db:
-    # Compose derives the volume name from the canonical project name. The
-    # storage path must be dedicated to this deployment, never the legacy DB.
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${NEXOLAB_DB_STORAGE_PATH:-/srv/owasp2025-db}
+    # nexolab-storage provisions this volume outside Compose and binds it to the
+    # containment-approved storage: size-capped, IO-limited, and verified by
+    # nexolab-runtime-verify against NEXOLAB_DB_STORAGE_PATH. Compose adopts that
+    # exact volume and must never create one, so a deployment can never silently
+    # come up on an empty database while the real one is orphaned. The
+    # deployment pins the provisioned name, the same way it pins its paths.
+    external: true
+    name: ${NEXOLAB_DB_VOLUME_NAME:-owasp2025_nexo_db}
