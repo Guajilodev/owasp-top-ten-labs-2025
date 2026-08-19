@@ -7,7 +7,6 @@ readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:-/opt/owasp2025}"
 readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
 readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-${PROJECT}-db-1}"
 readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-${PROJECT}-web-1}"
-readonly SNAPSHOT_DB="owasp2025_nexo_db.sql.gz"
 readonly SECRETS_FILE="${NEXOLAB_SECRETS_FILE:-/etc/nexolab/secrets.env}"
 readonly FIREWALL_BIN="${NEXOLAB_FIREWALL_BIN:-/usr/local/sbin/nexolab-firewall}"
 readonly NGINX_UPSTREAM_BIN="${NEXOLAB_NGINX_UPSTREAM_BIN:-/usr/local/sbin/nexolab-nginx-upstream}"
@@ -41,6 +40,18 @@ load_env() {
   [ -n "${NEXO_DB_ROOT_PASS:-}" ] || fail 'NEXO_DB_ROOT_PASS is required.'
 }
 
+# A snapshot names its own database archive. Pinning the name here would strand
+# every snapshot taken under a different one, so discover it and require exactly
+# one: two archives leave the restored database ambiguous.
+snapshot_db_archive() {
+  local -a archives=()
+  local path
+  while IFS= read -r -d '' path; do archives+=("$path"); done \
+    < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name '*.sql.gz' -print0 | sort -z)
+  [ "${#archives[@]}" -eq 1 ] || fail "Snapshot must carry exactly one database archive; found ${#archives[@]}."
+  printf '%s\n' "${archives[0]}"
+}
+
 check() {
   [ -d "$BACKUP_DIR" ] || fail "Snapshot directory does not exist: $BACKUP_DIR"
   [ -s "${BACKUP_DIR}/SHA256SUMS" ] || fail 'Snapshot checksum manifest is missing.'
@@ -59,8 +70,9 @@ check() {
     host/nexolab-containment.logrotate; do
     test -r "${BACKUP_DIR}/${file}" || fail "Snapshot is missing ${file}."
   done
-  test -s "${BACKUP_DIR}/${SNAPSHOT_DB}" || fail 'Snapshot database archive is missing.'
-  gzip -t "${BACKUP_DIR}/${SNAPSHOT_DB}" || fail 'Snapshot database archive is corrupt.'
+  snapshot_db="$(snapshot_db_archive)"
+  test -s "$snapshot_db" || fail 'Snapshot database archive is missing.'
+  gzip -t "$snapshot_db" || fail 'Snapshot database archive is corrupt.'
   printf 'Rollback snapshot is verified: %s\n' "$BACKUP_DIR"
 }
 
@@ -166,7 +178,7 @@ wait_for_database() {
 restore_database() {
   docker exec -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" "$DB_CONTAINER" \
     mariadb --protocol=socket -uroot -e "DROP DATABASE IF EXISTS \`${NEXO_DB_NAME}\`;"
-  gzip -cd "${BACKUP_DIR}/${SNAPSHOT_DB}" | docker exec -i -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" \
+  gzip -cd "$(snapshot_db_archive)" | docker exec -i -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" \
     "$DB_CONTAINER" mariadb --protocol=socket -uroot
   docker exec -e MYSQL_PWD="$NEXO_DB_ROOT_PASS" "$DB_CONTAINER" \
     mariadb --protocol=socket -uroot "$NEXO_DB_NAME" -Nse 'SELECT 1' | grep -qx 1 || \

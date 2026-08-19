@@ -524,7 +524,10 @@ touch "$temp/rollback/snapshot/project/web-image.tar" "$temp/rollback/snapshot/p
 for file in nexolab.guajilodev.com nexolab-nginx-upstream nexolab-upstream.conf nexolab-reset nexolab-firewall nexolab-storage nexolab-runtime-verify nexolab-firewall.service nexolab-start nexolab-start.service nexolab-report-failure nexolab-containment-failure@.service nexolab-reset.cron nexolab-reset.logrotate nexolab.slice nexolab-web.slice nexolab-db.slice nexolab-storage.env nexolab-db-storage.conf nexolab-containment.logrotate; do
   : >"$temp/rollback/snapshot/host/$file"
 done
-printf 'SELECT 1;\n' | gzip >"$temp/rollback/snapshot/owasp2025_nexo_db.sql.gz"
+# Snapshots on disk predate the current archive naming. Rollback must restore
+# whatever database archive a snapshot actually carries, or a naming change
+# silently turns every retained snapshot into an unrestorable one.
+printf 'SELECT 1;\n' | gzip >"$temp/rollback/snapshot/owasp_nexo_db_2025.sql.gz"
 (
   cd "$temp/rollback/snapshot"
   manifest="$(mktemp .manifest.XXXXXX)"
@@ -544,7 +547,10 @@ case "$1" in
       *"$NEXOLAB_TEST_WEB_CONTAINER"*) [ "$(<"$NEXOLAB_TEST_STATE/web")" = stopped ] && printf 'false\n' || printf 'true\n' ;;
       *"$NEXOLAB_TEST_DB_CONTAINER"*) [ "$(<"$NEXOLAB_TEST_STATE/db")" = stopped ] && printf 'false\n' || printf 'true\n' ;;
     esac ;;
-  exec) printf '1\n' ;;
+  # `docker exec -i` reads its stdin. A double that ignores it closes the pipe
+  # early and SIGPIPEs the archive producer, which pipefail turns into a
+  # rollback failure that depends on process scheduling.
+  exec) case " $* " in *' -i '*) cat >/dev/null ;; esac; printf '1\n' ;;
   stop) case "${!#}" in "$NEXOLAB_TEST_WEB_CONTAINER") printf 'stopped\n' >"$NEXOLAB_TEST_STATE/web" ;; "$NEXOLAB_TEST_DB_CONTAINER") printf 'stopped\n' >"$NEXOLAB_TEST_STATE/db" ;; esac ;;
   load|tag|image) exit 0 ;;
   compose)
@@ -590,6 +596,27 @@ expect_failure unshare -Ur --map-root-user env NEXOLAB_TEST_STATE="$temp/rollbac
   NEXOLAB_TEST_WEB_CONTAINER=owasp2025-web-1 NEXOLAB_TEST_DB_CONTAINER=owasp2025-db-1 \
   "$ROLLBACK" "$temp/rollback/snapshot" rollback
 pass 'real rollback script stops and confirms web and DB after failed runtime verification'
+
+run_rollback_check() {
+  unshare -Ur --map-root-user env NEXOLAB_TEST_STATE="$temp/rollback" \
+    PATH="$temp/rollback/bin:$PATH" NEXOLAB_PROJECT_DIR="$temp/rollback/project" \
+    NEXOLAB_SECRETS_FILE="$temp/rollback/secrets.env" "$ROLLBACK" "$1" check
+}
+seal_snapshot() (
+  cd "$1"
+  manifest="$(mktemp .manifest.XXXXXX)"
+  find . -type f ! -name SHA256SUMS ! -name "${manifest##*/}" -print0 | sort -z | xargs -0 sha256sum >"$manifest"
+  mv "$manifest" SHA256SUMS
+)
+run_rollback_check "$temp/rollback/snapshot" >/dev/null ||
+  fail 'rollback check rejected a snapshot whose database archive predates the current naming'
+# Two archives leave the restored database ambiguous, so the check must refuse
+# rather than silently pick one.
+cp -a "$temp/rollback/snapshot" "$temp/rollback/snapshot-ambiguous"
+printf 'SELECT 2;\n' | gzip >"$temp/rollback/snapshot-ambiguous/owasp2025_nexo_db.sql.gz"
+seal_snapshot "$temp/rollback/snapshot-ambiguous"
+expect_failure run_rollback_check "$temp/rollback/snapshot-ambiguous"
+pass 'rollback check restores any single snapshot archive and refuses an ambiguous pair'
 
 cat >"$temp/rollback/bin/runtime-ok" <<'SH'
 #!/usr/bin/env bash
