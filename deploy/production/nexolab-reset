@@ -3,7 +3,32 @@
 
 set -euo pipefail
 
-readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:-/opt/owasp2025}"
+# The deployment declares where it lives; this repository must not. Every entry
+# point -- systemd, cron, and an operator running a recovery tool by hand --
+# resolves the same deployment from one root-owned file instead of repeating the
+# path in a Compose env file, a cron header, and a unit drop-in. An inherited
+# variable is an explicit override and still wins. This runs before the failure
+# reporter exists, so it reports config errors directly.
+readonly DEPLOYMENT_ENV="${NEXOLAB_DEPLOYMENT_ENV:-/etc/nexolab/deployment.env}"
+deployment_fail() { printf 'ERROR: %s: %s\n' "$*" "$DEPLOYMENT_ENV" >&2; exit 1; }
+load_deployment_env() {
+  local line key mode
+  [ -e "$DEPLOYMENT_ENV" ] || return 0
+  { [ -f "$DEPLOYMENT_ENV" ] && [ ! -L "$DEPLOYMENT_ENV" ]; } || deployment_fail 'Deployment file is not a regular file'
+  [ "$(stat -c '%u' "$DEPLOYMENT_ENV")" = 0 ] || deployment_fail 'Deployment file must be owned by root'
+  mode="$(stat -c '%a' "$DEPLOYMENT_ENV")"
+  (( (8#$mode & 0022) == 0 )) || deployment_fail 'Deployment file must not be writable by group or other'
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+      NEXOLAB_PROJECT_DIR=*|NEXOLAB_PROJECT=*|NEXOLAB_WEB_CONTAINER=*|NEXOLAB_DB_CONTAINER=*|NEXOLAB_DB_VOLUME_NAME=*)
+        key="${line%%=*}"; [ -n "${!key:-}" ] || export "$key=${line#*=}" ;;
+      *) deployment_fail 'Deployment file contains an unsupported or malformed entry' ;;
+    esac
+  done <"$DEPLOYMENT_ENV"
+}
+load_deployment_env
+readonly PROJECT_DIR="${NEXOLAB_PROJECT_DIR:?NEXOLAB_PROJECT_DIR must name the deployment checkout; declare it in the deployment file or the environment}"
 readonly PROJECT="${NEXOLAB_PROJECT:-owasp2025}"
 readonly WEB_CONTAINER="${NEXOLAB_WEB_CONTAINER:-${PROJECT}-web-1}"
 readonly DB_CONTAINER="${NEXOLAB_DB_CONTAINER:-${PROJECT}-db-1}"

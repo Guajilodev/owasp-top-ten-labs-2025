@@ -346,7 +346,7 @@ chmod 0755 "$temp/absent/bin/docker"
 : >"$temp/absent/docker.log"
 # shellcheck disable=SC2016 # The child shell invokes sourced reset helpers.
 absent_state="$(unshare -Ur --map-root-user env PATH="$temp/absent/bin:$PATH" NEXOLAB_TEST_LOG="$temp/absent/docker.log" \
-  NEXOLAB_WEB_CONTAINER=absent-web bash -c 'exit() { return 0; }; source "$1" >/dev/null 2>&1; unset -f exit; state="$(container_running "$WEB_CONTAINER")"; [ "$state" = false ]; stop_and_confirm "$WEB_CONTAINER"; printf "%s\n" "$state"' -- "$RESET")"
+  NEXOLAB_PROJECT_DIR="$temp/absent" NEXOLAB_WEB_CONTAINER=absent-web bash -c 'exit() { return 0; }; source "$1" >/dev/null 2>&1; unset -f exit; state="$(container_running "$WEB_CONTAINER")"; [ "$state" = false ]; stop_and_confirm "$WEB_CONTAINER"; printf "%s\n" "$state"' -- "$RESET")"
 [ "$absent_state" = false ] || fail 'genuinely absent web container was not treated as stopped'
 grep -Fq 'ps -aq --no-trunc --filter id=absent-web' "$temp/absent/docker.log" || fail 'absent-container test did not prove ID lookup was empty'
 grep -Fq 'ps -aq --no-trunc --filter name=^/absent-web$' "$temp/absent/docker.log" || fail 'absent-container test did not prove name lookup was empty'
@@ -440,8 +440,8 @@ exec 8>"$temp/held.lock"; flock 8
 printf 'running\n' >"$temp/start/state/web"; printf 'running\n' >"$temp/start/state/db"; : >"$temp/start/log"
 expect_failure unshare -Ur --map-root-user env PATH="$temp/start/bin:$PATH" NEXOLAB_PROJECT_DIR="$temp/start/project" \
   NEXOLAB_LIFECYCLE_LOCK_FILE="$temp/held.lock" NEXOLAB_LIFECYCLE_LOCK_TIMEOUT_SECONDS=1 "$START"
-expect_failure env NEXOLAB_LIFECYCLE_LOCK_FILE="$temp/held.lock" NEXOLAB_LIFECYCLE_LOCK_TIMEOUT_SECONDS=1 "$RESET" reset
-expect_failure env NEXOLAB_LIFECYCLE_LOCK_FILE="$temp/held.lock" NEXOLAB_LIFECYCLE_LOCK_TIMEOUT_SECONDS=1 "$ROLLBACK" /does/not/exist rollback
+expect_failure env NEXOLAB_PROJECT_DIR="$temp/start/project" NEXOLAB_LIFECYCLE_LOCK_FILE="$temp/held.lock" NEXOLAB_LIFECYCLE_LOCK_TIMEOUT_SECONDS=1 "$RESET" reset
+expect_failure env NEXOLAB_PROJECT_DIR="$temp/start/project" NEXOLAB_LIFECYCLE_LOCK_FILE="$temp/held.lock" NEXOLAB_LIFECYCLE_LOCK_TIMEOUT_SECONDS=1 "$ROLLBACK" /does/not/exist rollback
 [ ! -s "$temp/start/log" ] || fail 'start mutated Docker while lifecycle lock was held'
 pass 'start, reset, and rollback share lifecycle lock contention behavior'
 
@@ -645,6 +645,55 @@ assert lines.index("upstream refresh") < lines.index("upstream verify"), lines
 assert lines[-1] == "upstream quarantine", lines
 PY
 pass 'rollback restores nginx quarantine after a post-refresh upstream verification failure'
+
+# The repository must carry no host path. Every entry point resolves the
+# deployment from one root-owned file, so a moved deployment is declared once
+# instead of in a Compose env file, a cron header, and a systemd drop-in.
+mkdir -p "$temp/deployment"
+readonly DEPLOYMENT_ERR="$temp/deployment/stderr.log"
+read_project_dir() {
+  local script="${!#}"
+  # shellcheck disable=SC2016 # The child shell expands the sourced constant.
+  unshare -Ur --map-root-user env "${@:1:$#-1}" bash -c \
+    'exit() { return 0; }; source "$1" >/dev/null 2>"$2"; unset -f exit; printf "%s\n" "$PROJECT_DIR"' \
+    -- "$script" "$DEPLOYMENT_ERR"
+}
+write_deployment_env() {
+  printf 'NEXOLAB_PROJECT_DIR=%s\n' "$1" >"$temp/deployment/deployment.env"
+  chmod "${2:-0600}" "$temp/deployment/deployment.env"
+}
+for script in "$RESET" "$START" "$ROLLBACK" "${PROJECT_DIR}/deploy/production/nexolab-backup"; do
+  grep -Fq '/opt/owasp2025' "$script" && fail "$(basename "$script") still carries a host path from the repository"
+done
+write_deployment_env /var/www/example/deployment
+[ "$(read_project_dir NEXOLAB_DEPLOYMENT_ENV="$temp/deployment/deployment.env" "$RESET")" = /var/www/example/deployment ] ||
+  fail 'reset did not resolve its project directory from the deployment file'
+[ "$(read_project_dir NEXOLAB_DEPLOYMENT_ENV="$temp/deployment/deployment.env" NEXOLAB_PROJECT_DIR=/explicit/override "$RESET")" = /explicit/override ] ||
+  fail 'an explicit project directory did not override the deployment file'
+expect_failure read_project_dir NEXOLAB_DEPLOYMENT_ENV="$temp/deployment/absent.env" "$RESET"
+grep -Fq 'NEXOLAB_PROJECT_DIR' "$DEPLOYMENT_ERR" ||
+  fail 'an unresolvable project directory did not name the variable an operator must set'
+# Source without neutralizing exit, so the loader's own refusal is observable
+# rather than swallowed, and assert on its reason instead of an exit status the
+# usage path would produce anyway.
+probe_deployment_env() {
+  local script="${!#}"
+  : >"$DEPLOYMENT_ERR"
+  # shellcheck disable=SC2016 # The child shell expands the sourced constant.
+  unshare -Ur --map-root-user env "${@:1:$#-1}" bash -c \
+    'source "$1" >/dev/null 2>"$2"' -- "$script" "$DEPLOYMENT_ERR" || true
+}
+printf 'NEXOLAB_PROJECT_DIR=/var/www/example/deployment\nEVIL=$(touch %s/pwned)\n' "$temp" >"$temp/deployment/deployment.env"
+chmod 0600 "$temp/deployment/deployment.env"
+probe_deployment_env NEXOLAB_DEPLOYMENT_ENV="$temp/deployment/deployment.env" "$RESET"
+grep -Fq 'unsupported or malformed entry' "$DEPLOYMENT_ERR" ||
+  fail 'the deployment loader accepted an unsupported entry'
+[ ! -e "$temp/pwned" ] || fail 'the deployment loader evaluated a value as shell code'
+write_deployment_env /var/www/example/deployment 0666
+probe_deployment_env NEXOLAB_DEPLOYMENT_ENV="$temp/deployment/deployment.env" "$RESET"
+grep -Fq 'must not be writable by group or other' "$DEPLOYMENT_ERR" ||
+  fail 'the deployment loader accepted a group/other-writable file'
+pass 'host scripts resolve the deployment from one root-owned file and fail closed on an unsafe or unresolvable one'
 
 # Use disposable real MariaDB and web containers for reset. A command wrapper
 # injects failures without weakening the reset implementation itself.

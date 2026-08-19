@@ -19,7 +19,26 @@ host facts; they are verified after installation by `nexolab-runtime-verify`.
 
 ## Install host artifacts
 
-From the reviewed checkout at `/opt/owasp2025`:
+Declare where the deployment lives before installing anything. Every host tool
+reads this one root-owned file, so systemd, cron, and an operator running a
+recovery tool by hand all resolve the same checkout:
+
+```bash
+install -d -m 0750 /etc/nexolab
+cat >/etc/nexolab/deployment.env <<'EOF'
+NEXOLAB_PROJECT_DIR=/var/www/example/owasp-top-ten-labs-2025
+NEXOLAB_PROJECT=owasp2025
+NEXOLAB_DB_VOLUME_NAME=owasp2025_nexo_db
+EOF
+chmod 0600 /etc/nexolab/deployment.env
+```
+
+It accepts only those keys as unquoted `KEY=value` records and is never sourced
+as shell code. An inherited environment variable overrides it. Without a
+resolvable `NEXOLAB_PROJECT_DIR` the host tools refuse to run rather than guess
+a path.
+
+From the reviewed checkout:
 
 ```bash
 install -m 0750 deploy/production/nexolab-firewall /usr/local/sbin/nexolab-firewall
@@ -60,11 +79,12 @@ never uses a Docker service name, fixed bridge CIDR, or published host port.
 
 ## Secrets: root reads a separate, non-executable file
 
-Create `/opt/owasp2025/.env` with mode `0600`, owned by root, for Compose. It
-must set `NEXOLAB_DB_STORAGE_PATH` to a dedicated canonical path (for example
-`/srv/owasp2025-db`), never the legacy database path, along with the environment
-values required by the containers. Compose derives a separate `owasp2025_nexo_db`
-volume for that path. Root automation **does not source it**.
+Create `$NEXOLAB_PROJECT_DIR/.env` with mode `0600`, owned by root, for Compose.
+It carries the environment values the containers require. `nexolab-storage`
+provisions the database volume outside Compose and binds it to the
+containment-approved storage path it records in `/etc/nexolab/storage.env`;
+Compose adopts that volume by the name the deployment file pins and must never
+create one. Root automation **does not source** the Compose env file.
 
 Create `/etc/nexolab/secrets.env` as root-owned mode `0600`. It has exactly
 these four unquoted `KEY=value` records and no shell syntax, comments are
