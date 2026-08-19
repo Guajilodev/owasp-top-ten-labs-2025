@@ -662,9 +662,41 @@ write_deployment_env() {
   printf 'NEXOLAB_PROJECT_DIR=%s\n' "$1" >"$temp/deployment/deployment.env"
   chmod "${2:-0600}" "$temp/deployment/deployment.env"
 }
-for script in "$RESET" "$START" "$ROLLBACK" "${PROJECT_DIR}/deploy/production/nexolab-backup"; do
+read_constant() {
+  local var="$1"; shift
+  local script="${!#}"
+  # shellcheck disable=SC2016 # The child shell expands the sourced constant.
+  unshare -Ur --map-root-user env "${@:1:$#-1}" bash -c \
+    'exit() { return 0; }; source "$2" >/dev/null 2>"$3"; unset -f exit; printf "%s\n" "${!1}"' \
+    -- "$var" "$script" "$DEPLOYMENT_ERR"
+}
+host_scripts=()
+for name in nexolab-reset nexolab-start nexolab-backup nexolab-rollback nexolab-firewall nexolab-runtime-verify nexolab-nginx-upstream; do
+  host_scripts+=("${PROJECT_DIR}/deploy/production/${name}")
+done
+for script in "${host_scripts[@]}"; do
   grep -Fq '/opt/owasp2025' "$script" && fail "$(basename "$script") still carries a host path from the repository"
 done
+# Every host tool reads the same declaration, so the deployment identity cannot
+# drift between the tool that starts the lab and the tool that contains it.
+mkdir -p "$temp/deployment/project"
+touch "$temp/deployment/project/docker-compose.prod.yml"
+printf 'NEXOLAB_PROJECT_DIR=%s\nNEXOLAB_PROJECT=labproject\n' "$temp/deployment/project" >"$temp/deployment/deployment.env"
+chmod 0600 "$temp/deployment/deployment.env"
+for script in "${host_scripts[@]}"; do
+  # nexolab-start runs its lifecycle on load, so it proves the same contract
+  # through the path it reports instead of through a sourced constant.
+  [ "$script" = "$START" ] && continue
+  [ "$(read_constant PROJECT NEXOLAB_DEPLOYMENT_ENV="$temp/deployment/deployment.env" "$script")" = labproject ] ||
+    fail "$(basename "$script") did not resolve its project name from the deployment file"
+done
+printf 'NEXOLAB_PROJECT_DIR=%s\n' "$temp/deployment/empty" >"$temp/deployment/start.env"
+chmod 0600 "$temp/deployment/start.env"
+mkdir -p "$temp/deployment/empty"
+expect_failure_output "$temp/deployment/start.out" unshare -Ur --map-root-user env \
+  NEXOLAB_DEPLOYMENT_ENV="$temp/deployment/start.env" NEXOLAB_LIFECYCLE_LOCK_FILE="$temp/deployment/start.lock" "$START"
+grep -Fq "$temp/deployment/empty/docker-compose.prod.yml" "$temp/deployment/start.out" ||
+  fail 'start did not resolve its project directory from the deployment file'
 write_deployment_env /var/www/example/deployment
 [ "$(read_project_dir NEXOLAB_DEPLOYMENT_ENV="$temp/deployment/deployment.env" "$RESET")" = /var/www/example/deployment ] ||
   fail 'reset did not resolve its project directory from the deployment file'
